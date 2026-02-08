@@ -20,33 +20,13 @@ struct WboitOutput {
 fn vs_main(input: VertexInput) -> VertexOutput {
     return basic_vertex(input);
 }
-
-@fragment
-fn fs_main(in: VertexOutput) -> WboitOutput {
-    let lit = simple_lighting(in.world_normal, in.color);
-    let alpha = lit.a;
-
-    // Linearize depth: 1/clip_position.w recovers eye-space distance
-    let linear_z = 1.0 / in.clip_position.w;
-
-    // Normalize to [0, 1] using camera near/far planes
-    let normalized_z = clamp((linear_z - camera.near) / (camera.far - camera.near), 0.0, 1.0);
-    let bin = min(u32(normalized_z * f32(histo_params.num_bins)), histo_params.num_bins - 1u);
-
-    // Tile index
-    let tile_x = u32(in.clip_position.x) / 16u;
-    let tile_y = u32(in.clip_position.y) / 16u;
-    let tile_index = tile_y * histo_params.tile_count_x + tile_x;
-
-    // Record this fragment in the histogram
-    let histo_idx = tile_index * histo_params.num_bins + bin;
-    atomicAdd(&histogram[histo_idx], 1u);
-
-    // --- Trilinear CDF interpolation across XY (tiles) and Z (depth bins) ---
-    let nb = histo_params.num_bins;
-    let tcx = histo_params.tile_count_x;
-    let tcy = histo_params.tile_count_y;
-
+fn trilinear_cdf_sample(
+    normalized_z: f32,
+    clip_pos_xy: vec2<f32>,
+    nb: u32,
+    tcx: u32,
+    tcy: u32,
+) -> f32 {
     // Z: continuous bin coordinate, centered so bin centers are at integers
     let fbin = clamp(normalized_z * f32(nb) - 0.5, 0.0, f32(nb - 1u));
     let bin_lo = u32(floor(fbin));
@@ -54,8 +34,8 @@ fn fs_main(in: VertexOutput) -> WboitOutput {
     let tz = fbin - f32(bin_lo);
 
     // XY: continuous tile coordinates centered on tile centers (center of tile i = pixel i*16+8)
-    let cx = clamp((in.clip_position.x - 8.0) / 16.0, 0.0, f32(tcx - 1u));
-    let cy = clamp((in.clip_position.y - 8.0) / 16.0, 0.0, f32(tcy - 1u));
+    let cx = clamp((clip_pos_xy.x - 8.0) / 16.0, 0.0, f32(tcx - 1u));
+    let cy = clamp((clip_pos_xy.y - 8.0) / 16.0, 0.0, f32(tcy - 1u));
     let tx0 = u32(floor(cx));
     let tx1 = min(tx0 + 1u, tcx - 1u);
     let ty0 = u32(floor(cy));
@@ -81,8 +61,55 @@ fn fs_main(in: VertexOutput) -> WboitOutput {
         mix(cdf[i01 + bin_hi], cdf[i11 + bin_hi], fx),
         fy
     );
+
     // Linear Z interpolation between bins
-    let equalized_z = mix(c_lo, c_hi, tz);
+    return mix(c_lo, c_hi, tz);
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> WboitOutput {
+    let lit = simple_lighting(in.world_normal, in.color);
+    let alpha = lit.a;
+
+    // Linearize depth: 1/clip_position.w recovers eye-space distance
+    let linear_z = 1.0 / in.clip_position.w;
+
+    // Normalize to [0, 1] using camera near/far planes
+    let normalized_z = clamp(
+        (linear_z - camera.near) / (camera.far - camera.near),
+        0.0,
+        1.0,
+    );
+    let bin = min(
+        u32(normalized_z * f32(histo_params.num_bins)),
+        histo_params.num_bins - 1u,
+    );
+
+    // Tile index
+    let tile_x = u32(in.clip_position.x) / 16u;
+    let tile_y = u32(in.clip_position.y) / 16u;
+    let tile_index = tile_y * histo_params.tile_count_x + tile_x;
+
+    // Record this fragment in the histogram
+    let histo_idx = tile_index * histo_params.num_bins + bin;
+    atomicAdd(&histogram[histo_idx], 1u);
+
+    // --- CDF lookup (with and without trilinear interpolation) ---
+    let nb = histo_params.num_bins;
+    let tcx = histo_params.tile_count_x;
+    let tcy = histo_params.tile_count_y;
+
+    // Trilinear CDF interpolation across XY (tiles) and Z (depth bins)
+    // let equalized_z = trilinear_cdf_sample(
+    //     normalized_z,
+    //     in.clip_position.xy,
+    //     nb,
+    //     tcx,
+    //     tcy,
+    // );
+
+    // Non-interpolated version: single-tile, single-bin lookup
+    let equalized_z = cdf[tile_index * nb + bin];
 
     // Exponential weight spanning the usable f16 accumulation range
     // equalized_z=0 (near) → 2^13 = 8192, equalized_z=1 (far) → 2^-13 ≈ 1.2e-4
