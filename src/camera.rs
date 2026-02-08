@@ -23,7 +23,7 @@ impl Camera {
             target: glam::Vec3::ZERO,
             aspect,
             fov_y: 45.0_f32.to_radians(),
-            near: 0.5,
+            near: 2.0,
             far: 15.0,
             dragging: false,
             last_mouse: None,
