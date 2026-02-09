@@ -110,9 +110,15 @@ impl Renderer {
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode: wgpu::PresentMode::AutoVsync,
-            alpha_mode: if surface_caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+            alpha_mode: if surface_caps
+                .alpha_modes
+                .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
+            {
                 wgpu::CompositeAlphaMode::PreMultiplied
-            } else if surface_caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PostMultiplied) {
+            } else if surface_caps
+                .alpha_modes
+                .contains(&wgpu::CompositeAlphaMode::PostMultiplied)
+            {
                 wgpu::CompositeAlphaMode::PostMultiplied
             } else {
                 surface_caps.alpha_modes[0]
@@ -201,8 +207,8 @@ impl Renderer {
 
         // Histogram resources
         let histo_params = HistogramParams {
-            tile_count_x: (surface_config.width + TILE_SIZE - 1) / TILE_SIZE,
-            tile_count_y: (surface_config.height + TILE_SIZE - 1) / TILE_SIZE,
+            tile_count_x: surface_config.width.div_ceil(TILE_SIZE),
+            tile_count_y: surface_config.height.div_ceil(TILE_SIZE),
             num_bins: NUM_DEPTH_BINS,
             depth_range: 50.0,
         };
@@ -399,8 +405,8 @@ impl Renderer {
 
         // Recreate histogram resources
         self.histo_params = HistogramParams {
-            tile_count_x: (width + TILE_SIZE - 1) / TILE_SIZE,
-            tile_count_y: (height + TILE_SIZE - 1) / TILE_SIZE,
+            tile_count_x: width.div_ceil(TILE_SIZE),
+            tile_count_y: height.div_ceil(TILE_SIZE),
             num_bins: NUM_DEPTH_BINS,
             depth_range: 50.0,
         };
@@ -522,7 +528,9 @@ impl Renderer {
                 let pos_b = scene.objects[b].transform.col(3).truncate();
                 let dist_a = (pos_a - eye).length_squared();
                 let dist_b = (pos_b - eye).length_squared();
-                dist_b.partial_cmp(&dist_a).unwrap_or(std::cmp::Ordering::Equal)
+                dist_b
+                    .partial_cmp(&dist_a)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             });
         }
 
@@ -791,7 +799,6 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         }
     }
-
 }
 
 fn create_depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {

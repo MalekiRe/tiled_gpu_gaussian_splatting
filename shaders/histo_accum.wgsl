@@ -108,8 +108,13 @@ fn fs_main(in: VertexOutput) -> WboitOutput {
     //     tcy,
     // );
 
-    // Non-interpolated version: single-tile, single-bin lookup
-    let equalized_z = cdf[tile_index * nb + bin];
+    // Centered CDF: use midpoint of the CDF interval for this bin
+    // cdf[bin] = right edge of interval, cdf[bin-1] = left edge
+    // This maps a single-bin distribution to 0.5 instead of 1.0,
+    // avoiding extreme weights that underflow f16 accumulation
+    let cdf_right = cdf[tile_index * nb + bin];
+    let cdf_left = select(cdf[tile_index * nb + bin - 1u], 0.0, bin == 0u);
+    let equalized_z = (cdf_left + cdf_right) * 0.5;
 
     // Exponential weight spanning the usable f16 accumulation range
     // equalized_z=0 (near) → 2^13 = 8192, equalized_z=1 (far) → 2^-13 ≈ 1.2e-4
