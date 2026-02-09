@@ -3,8 +3,6 @@ use crate::vertex::Vertex;
 pub struct HistogramWboitPipeline {
     pub accum_pipeline: wgpu::RenderPipeline,
     pub composite_pipeline: wgpu::RenderPipeline,
-    pub global_accum_pipeline: wgpu::RenderPipeline,
-    pub global_composite_pipeline: wgpu::RenderPipeline,
     pub histo_accum_bgl: wgpu::BindGroupLayout,
     pub histo_composite_tex_bgl: wgpu::BindGroupLayout,
     pub histo_composite_buf_bgl: wgpu::BindGroupLayout,
@@ -141,33 +139,20 @@ impl HistogramWboitPipeline {
         let accum_wgsl = include_str!("../../shaders/histo_accum.wgsl");
         let composite_wgsl = include_str!("../../shaders/histo_composite.wgsl");
 
-        // Per-tile variant (GLOBAL_HISTO = false)
+        // Global variant only
         let (accum_pipeline, composite_pipeline) = create_pipeline_pair(
             device,
             surface_format,
             &accum_layout,
             &composite_layout,
-            &format!("const GLOBAL_HISTO: bool = false;\n{}\n{}", common_wgsl, accum_wgsl),
-            &format!("const GLOBAL_HISTO: bool = false;\n{}", composite_wgsl),
-            "histo_tile",
-        );
-
-        // Global variant (GLOBAL_HISTO = true)
-        let (global_accum_pipeline, global_composite_pipeline) = create_pipeline_pair(
-            device,
-            surface_format,
-            &accum_layout,
-            &composite_layout,
-            &format!("const GLOBAL_HISTO: bool = true;\n{}\n{}", common_wgsl, accum_wgsl),
-            &format!("const GLOBAL_HISTO: bool = true;\n{}", composite_wgsl),
-            "histo_global",
+            &format!("{}\n{}", common_wgsl, accum_wgsl),
+            composite_wgsl,
+            "histo",
         );
 
         Self {
             accum_pipeline,
             composite_pipeline,
-            global_accum_pipeline,
-            global_composite_pipeline,
             histo_accum_bgl,
             histo_composite_tex_bgl,
             histo_composite_buf_bgl,

@@ -36,7 +36,7 @@ impl ApplicationHandler for App {
         }
 
         let attrs = Window::default_attributes()
-            .with_title("WBOIT Demo - Press 1/2/3/4 to switch modes, M to toggle meshes")
+            .with_title("WBOIT Demo - Press 1/2/3 to switch modes, M to toggle meshes")
             .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))
             .with_transparent(true);
 
@@ -84,10 +84,6 @@ impl ApplicationHandler for App {
                             }
                             "3" => {
                                 renderer.mode = RenderMode::HistogramWboit;
-                                println!("Mode: {}", renderer.mode.name());
-                            }
-                            "4" => {
-                                renderer.mode = RenderMode::GlobalHistogramWboit;
                                 println!("Mode: {}", renderer.mode.name());
                             }
                             "r" | "R" => {
