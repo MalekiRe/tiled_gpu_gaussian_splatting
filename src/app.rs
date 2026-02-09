@@ -97,6 +97,13 @@ impl ApplicationHandler for App {
                                     if self.scene.show_meshes { "ON" } else { "OFF" }
                                 );
                             }
+                            "o" | "O" => {
+                                self.scene.force_opaque = !self.scene.force_opaque;
+                                println!(
+                                    "Opaque: {}",
+                                    if self.scene.force_opaque { "ON" } else { "OFF" }
+                                );
+                            }
                             _ => {}
                         },
                         Key::Named(NamedKey::Escape) => {

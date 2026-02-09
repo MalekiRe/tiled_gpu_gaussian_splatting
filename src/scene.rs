@@ -6,6 +6,7 @@ pub struct SceneObject {
     pub transform: glam::Mat4,
     pub color: [f32; 4],
     pub is_extra_mesh: bool, // toggled by M key
+    pub original_alpha: f32, // vertex alpha for opaque toggle
 }
 
 impl SceneObject {
@@ -20,6 +21,7 @@ impl SceneObject {
 pub struct Scene {
     pub objects: Vec<SceneObject>,
     pub show_meshes: bool,
+    pub force_opaque: bool,
     pub time: f32,
 }
 
@@ -69,6 +71,7 @@ impl Scene {
                 transform,
                 color: [1.0, 1.0, 1.0, 1.0],
                 is_extra_mesh: false,
+                original_alpha: color[3],
             });
         }
 
@@ -78,6 +81,7 @@ impl Scene {
             transform: glam::Mat4::from_translation(glam::Vec3::new(2.5, 0.0, 0.0)),
             color: [1.0, 1.0, 1.0, 1.0],
             is_extra_mesh: true,
+            original_alpha: 0.3,
         });
 
         // Transparent sphere
@@ -87,11 +91,13 @@ impl Scene {
                 * glam::Mat4::from_scale(glam::Vec3::splat(1.2)),
             color: [1.0, 1.0, 1.0, 1.0],
             is_extra_mesh: true,
+            original_alpha: 0.35,
         });
 
         Scene {
             objects,
             show_meshes: true,
+            force_opaque: false,
             time: 0.0,
         }
     }

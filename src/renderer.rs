@@ -535,7 +535,10 @@ impl Renderer {
         }
 
         for &idx in &visible {
-            let uniform = scene.objects[idx].uniform();
+            let mut uniform = scene.objects[idx].uniform();
+            if scene.force_opaque {
+                uniform.color[3] = 1.0 / scene.objects[idx].original_alpha;
+            }
             self.queue.write_buffer(
                 &self.gpu_meshes[idx].object_buffer,
                 0,
