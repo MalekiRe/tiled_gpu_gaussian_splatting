@@ -3,6 +3,8 @@ use crate::vertex::Vertex;
 pub struct HistogramWboitPipeline {
     pub accum_pipeline: wgpu::RenderPipeline,
     pub composite_pipeline: wgpu::RenderPipeline,
+    pub global_accum_pipeline: wgpu::RenderPipeline,
+    pub global_composite_pipeline: wgpu::RenderPipeline,
     pub histo_accum_bgl: wgpu::BindGroupLayout,
     pub histo_composite_tex_bgl: wgpu::BindGroupLayout,
     pub histo_composite_buf_bgl: wgpu::BindGroupLayout,
@@ -53,97 +55,6 @@ impl HistogramWboitPipeline {
                     count: None,
                 },
             ],
-        });
-
-        // Accumulation pipeline
-        let common_wgsl = include_str!("../../shaders/common.wgsl");
-        let accum_wgsl = include_str!("../../shaders/histo_accum.wgsl");
-        let accum_source = format!("{}\n{}", common_wgsl, accum_wgsl);
-
-        let accum_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("histo_accum shader"),
-            source: wgpu::ShaderSource::Wgsl(accum_source.into()),
-        });
-
-        let accum_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("histo_accum pipeline layout"),
-            bind_group_layouts: &[camera_bgl, object_bgl, &histo_accum_bgl],
-            immediate_size: 0,
-        });
-
-        let accum_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("histo_accum pipeline"),
-            layout: Some(&accum_layout),
-            vertex: wgpu::VertexState {
-                module: &accum_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[Vertex::layout()],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &accum_shader,
-                entry_point: Some("fs_main"),
-                targets: &[
-                    // accum (Rgba16Float, additive)
-                    Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::Rgba16Float,
-                        blend: Some(wgpu::BlendState {
-                            color: wgpu::BlendComponent {
-                                src_factor: wgpu::BlendFactor::One,
-                                dst_factor: wgpu::BlendFactor::One,
-                                operation: wgpu::BlendOperation::Add,
-                            },
-                            alpha: wgpu::BlendComponent {
-                                src_factor: wgpu::BlendFactor::One,
-                                dst_factor: wgpu::BlendFactor::One,
-                                operation: wgpu::BlendOperation::Add,
-                            },
-                        }),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                    // revealage (R8Unorm, multiplicative)
-                    Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::R8Unorm,
-                        blend: Some(wgpu::BlendState {
-                            color: wgpu::BlendComponent {
-                                src_factor: wgpu::BlendFactor::Zero,
-                                dst_factor: wgpu::BlendFactor::OneMinusSrc,
-                                operation: wgpu::BlendOperation::Add,
-                            },
-                            alpha: wgpu::BlendComponent {
-                                src_factor: wgpu::BlendFactor::Zero,
-                                dst_factor: wgpu::BlendFactor::OneMinusSrc,
-                                operation: wgpu::BlendOperation::Add,
-                            },
-                        }),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    }),
-                ],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            multiview_mask: None,
-            cache: None,
-        });
-
-        // Composite pipeline
-        let composite_wgsl = include_str!("../../shaders/histo_composite.wgsl");
-
-        let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("histo_composite shader"),
-            source: wgpu::ShaderSource::Wgsl(composite_wgsl.into()),
         });
 
         let histo_composite_tex_bgl =
@@ -213,48 +124,172 @@ impl HistogramWboitPipeline {
                 ],
             });
 
+        let accum_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("histo_accum pipeline layout"),
+            bind_group_layouts: &[camera_bgl, object_bgl, &histo_accum_bgl],
+            immediate_size: 0,
+        });
+
         let composite_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("histo composite pipeline layout"),
             bind_group_layouts: &[&histo_composite_tex_bgl, &histo_composite_buf_bgl],
             immediate_size: 0,
         });
 
-        let composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("histo_composite pipeline"),
-            layout: Some(&composite_layout),
-            vertex: wgpu::VertexState {
-                module: &composite_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &composite_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: Default::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        // Shader sources
+        let common_wgsl = include_str!("../../shaders/common.wgsl");
+        let accum_wgsl = include_str!("../../shaders/histo_accum.wgsl");
+        let composite_wgsl = include_str!("../../shaders/histo_composite.wgsl");
+
+        // Per-tile variant (GLOBAL_HISTO = false)
+        let (accum_pipeline, composite_pipeline) = create_pipeline_pair(
+            device,
+            surface_format,
+            &accum_layout,
+            &composite_layout,
+            &format!("const GLOBAL_HISTO: bool = false;\n{}\n{}", common_wgsl, accum_wgsl),
+            &format!("const GLOBAL_HISTO: bool = false;\n{}", composite_wgsl),
+            "histo_tile",
+        );
+
+        // Global variant (GLOBAL_HISTO = true)
+        let (global_accum_pipeline, global_composite_pipeline) = create_pipeline_pair(
+            device,
+            surface_format,
+            &accum_layout,
+            &composite_layout,
+            &format!("const GLOBAL_HISTO: bool = true;\n{}\n{}", common_wgsl, accum_wgsl),
+            &format!("const GLOBAL_HISTO: bool = true;\n{}", composite_wgsl),
+            "histo_global",
+        );
 
         Self {
             accum_pipeline,
             composite_pipeline,
+            global_accum_pipeline,
+            global_composite_pipeline,
             histo_accum_bgl,
             histo_composite_tex_bgl,
             histo_composite_buf_bgl,
         }
     }
+}
+
+fn create_pipeline_pair(
+    device: &wgpu::Device,
+    surface_format: wgpu::TextureFormat,
+    accum_layout: &wgpu::PipelineLayout,
+    composite_layout: &wgpu::PipelineLayout,
+    accum_source: &str,
+    composite_source: &str,
+    label_prefix: &str,
+) -> (wgpu::RenderPipeline, wgpu::RenderPipeline) {
+    let accum_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(&format!("{label_prefix}_accum shader")),
+        source: wgpu::ShaderSource::Wgsl(accum_source.into()),
+    });
+
+    let accum_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(&format!("{label_prefix}_accum pipeline")),
+        layout: Some(accum_layout),
+        vertex: wgpu::VertexState {
+            module: &accum_shader,
+            entry_point: Some("vs_main"),
+            buffers: &[Vertex::layout()],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &accum_shader,
+            entry_point: Some("fs_main"),
+            targets: &[
+                // accum (Rgba16Float, additive)
+                Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+                // revealage (R8Unorm, multiplicative)
+                Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::R8Unorm,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Zero,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::Zero,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+            ],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+
+    let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(&format!("{label_prefix}_composite shader")),
+        source: wgpu::ShaderSource::Wgsl(composite_source.into()),
+    });
+
+    let composite_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(&format!("{label_prefix}_composite pipeline")),
+        layout: Some(composite_layout),
+        vertex: wgpu::VertexState {
+            module: &composite_shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &composite_shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: surface_format,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: Default::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+
+    (accum_pipeline, composite_pipeline)
 }

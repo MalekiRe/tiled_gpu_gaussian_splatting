@@ -37,11 +37,24 @@ fn fs_main(in: CompositeOutput) -> @location(0) vec4<f32> {
     let avg_color = accum.rgb / max(accum.a, 1e-5);
     let alpha = 1.0 - revealage;
 
-    if (u32(in.position.x) % 16u == 0u && u32(in.position.y) % 16u == 0u) {
-	    // 2. Build CDF from histogram for this pixel's tile, then clear histogram
-	    let tile_x = u32(in.position.x) / 16u;
-	    let tile_y = u32(in.position.y) / 16u;
-	    let tile_index = tile_y * histo_params.tile_count_x + tile_x;
+    // GLOBAL_HISTO const is prepended at pipeline creation
+    // Per-tile: one corner pixel per tile builds that tile's CDF
+    // Global: only pixel (0,0) builds the single CDF (no races)
+    var should_build_cdf = false;
+    if (GLOBAL_HISTO) {
+        should_build_cdf = (u32(in.position.x) == 0u && u32(in.position.y) == 0u);
+    } else {
+        should_build_cdf = (u32(in.position.x) % 16u == 0u && u32(in.position.y) % 16u == 0u);
+    }
+
+    if (should_build_cdf) {
+	    // 2. Build CDF from histogram, then clear histogram
+	    var tile_index = 0u;
+	    if (!GLOBAL_HISTO) {
+	        let tile_x = u32(in.position.x) / 16u;
+	        let tile_y = u32(in.position.y) / 16u;
+	        tile_index = tile_y * histo_params.tile_count_x + tile_x;
+	    }
 	    let base = tile_index * histo_params.num_bins;
 
 	    // Compute total (atomicLoad is non-destructive, all fragments in tile read same values)

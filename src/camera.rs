@@ -24,7 +24,7 @@ impl Camera {
             aspect,
             fov_y: 45.0_f32.to_radians(),
             near: 2.0,
-            far: 15.0,
+            far: 100.0,
             dragging: false,
             last_mouse: None,
         }

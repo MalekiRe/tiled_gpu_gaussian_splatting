@@ -13,6 +13,7 @@ pub enum RenderMode {
     AlphaBlend = 1,
     NaiveWboit = 2,
     HistogramWboit = 3,
+    GlobalHistogramWboit = 4,
 }
 
 impl RenderMode {
@@ -20,7 +21,8 @@ impl RenderMode {
         match self {
             RenderMode::AlphaBlend => "Alpha Blend",
             RenderMode::NaiveWboit => "Naive WBOIT",
-            RenderMode::HistogramWboit => "Histogram-Equalized WBOIT",
+            RenderMode::HistogramWboit => "Histogram-Equalized WBOIT (per-tile)",
+            RenderMode::GlobalHistogramWboit => "Histogram-Equalized WBOIT (global)",
         }
     }
 }
@@ -575,7 +577,7 @@ impl Renderer {
             RenderMode::NaiveWboit => {
                 self.render_naive_wboit(&mut encoder, &view, &visible);
             }
-            RenderMode::HistogramWboit => {
+            RenderMode::HistogramWboit | RenderMode::GlobalHistogramWboit => {
                 self.render_histogram_wboit(&mut encoder, &view, &visible);
             }
         }
@@ -721,6 +723,18 @@ impl Renderer {
         view: &wgpu::TextureView,
         visible: &[usize],
     ) {
+        let is_global = self.mode == RenderMode::GlobalHistogramWboit;
+        let accum_pipeline = if is_global {
+            &self.histogram_wboit.global_accum_pipeline
+        } else {
+            &self.histogram_wboit.accum_pipeline
+        };
+        let composite_pipeline = if is_global {
+            &self.histogram_wboit.global_composite_pipeline
+        } else {
+            &self.histogram_wboit.composite_pipeline
+        };
+
         // Pass 1: Accumulation + histogram recording
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -761,7 +775,7 @@ impl Renderer {
                 ..Default::default()
             });
 
-            pass.set_pipeline(&self.histogram_wboit.accum_pipeline);
+            pass.set_pipeline(accum_pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
             pass.set_bind_group(2, &self.histo_accum_bind_group, &[]);
 
@@ -796,7 +810,7 @@ impl Renderer {
                 ..Default::default()
             });
 
-            pass.set_pipeline(&self.histogram_wboit.composite_pipeline);
+            pass.set_pipeline(composite_pipeline);
             pass.set_bind_group(0, &self.histo_composite_tex_bind_group, &[]);
             pass.set_bind_group(1, &self.histo_composite_buf_bind_group, &[]);
             pass.draw(0..3, 0..1);

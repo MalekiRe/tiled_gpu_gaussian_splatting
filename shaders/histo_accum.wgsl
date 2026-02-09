@@ -85,10 +85,13 @@ fn fs_main(in: VertexOutput) -> WboitOutput {
         histo_params.num_bins - 1u,
     );
 
-    // Tile index
-    let tile_x = u32(in.clip_position.x) / 16u;
-    let tile_y = u32(in.clip_position.y) / 16u;
-    let tile_index = tile_y * histo_params.tile_count_x + tile_x;
+    // Tile index (GLOBAL_HISTO const is prepended at pipeline creation)
+    var tile_index = 0u;
+    if (!GLOBAL_HISTO) {
+        let tile_x = u32(in.clip_position.x) / 16u;
+        let tile_y = u32(in.clip_position.y) / 16u;
+        tile_index = tile_y * histo_params.tile_count_x + tile_x;
+    }
 
     // Record this fragment in the histogram
     let histo_idx = tile_index * histo_params.num_bins + bin;
@@ -108,13 +111,17 @@ fn fs_main(in: VertexOutput) -> WboitOutput {
     //     tcy,
     // );
 
-    // Centered CDF: use midpoint of the CDF interval for this bin
-    // cdf[bin] = right edge of interval, cdf[bin-1] = left edge
-    // This maps a single-bin distribution to 0.5 instead of 1.0,
-    // avoiding extreme weights that underflow f16 accumulation
-    let cdf_right = cdf[tile_index * nb + bin];
-    let cdf_left = select(cdf[tile_index * nb + bin - 1u], 0.0, bin == 0u);
-    let equalized_z = (cdf_left + cdf_right) * 0.5;
+    // Piecewise-linear CDF interpolation for smooth equalized depth.
+    // Without interpolation, equalized_z is a step function that jumps
+    // at bin boundaries, creating visible contour-line artifacts.
+    // Interpolating between cdf[bin-1] (left edge) and cdf[bin] (right edge)
+    // using the fractional position within the bin makes equalized_z continuous.
+    let fbin = clamp(normalized_z * f32(nb), 0.0, f32(nb));
+    let bin_lo = min(u32(floor(fbin)), nb - 1u);
+    let t = fbin - f32(bin_lo);
+    let cdf_hi = cdf[tile_index * nb + bin_lo];
+    let cdf_lo = select(cdf[tile_index * nb + bin_lo - 1u], 0.0, bin_lo == 0u);
+    let equalized_z = mix(cdf_lo, cdf_hi, t);
 
     // Exponential weight spanning the usable f16 accumulation range
     // equalized_z=0 (near) → 2^13 = 8192, equalized_z=1 (far) → 2^-13 ≈ 1.2e-4
