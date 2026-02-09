@@ -39,6 +39,7 @@ pub struct Renderer {
     pub surface: wgpu::Surface<'static>,
     pub surface_config: wgpu::SurfaceConfiguration,
     pub mode: RenderMode,
+    pub use_revealage: bool,
 
     // Shared resources
     camera_buffer: wgpu::Buffer,
@@ -56,6 +57,10 @@ pub struct Renderer {
     revealage_texture_view: wgpu::TextureView,
     wboit_composite_bind_group: wgpu::BindGroup,
 
+    // Revealage flag uniform
+    revealage_flag_buffer: wgpu::Buffer,
+    naive_revealage_bind_group: wgpu::BindGroup,
+
     // Histogram WBOIT resources
     histogram_buffer: wgpu::Buffer,
     cdf_buffer: wgpu::Buffer,
@@ -63,6 +68,7 @@ pub struct Renderer {
     histo_accum_bind_group: wgpu::BindGroup,
     histo_composite_tex_bind_group: wgpu::BindGroup,
     histo_composite_buf_bind_group: wgpu::BindGroup,
+    histo_composite_flag_bind_group: wgpu::BindGroup,
     histo_params: HistogramParams,
 
     // Bind group layouts (needed for recreation)
@@ -182,6 +188,14 @@ impl Renderer {
         let histogram_wboit =
             HistogramWboitPipeline::new(&device, surface_format, &camera_bgl, &object_bgl);
 
+        // Revealage flag buffer (u32: 0 = use exp approximation, 1 = use revealage)
+        let revealage_flag_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("revealage flag buffer"),
+            size: 4,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         // Depth texture
         let depth_texture_view =
             create_depth_texture(&device, surface_config.width, surface_config.height);
@@ -203,6 +217,15 @@ impl Renderer {
                     resource: wgpu::BindingResource::TextureView(&revealage_texture_view),
                 },
             ],
+        });
+
+        let naive_revealage_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("naive revealage flag bg"),
+            layout: &naive_wboit.flag_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: revealage_flag_buffer.as_entire_binding(),
+            }],
         });
 
         // Histogram resources
@@ -297,12 +320,22 @@ impl Renderer {
             ],
         });
 
+        let histo_composite_flag_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("histo composite flag bg"),
+            layout: &histogram_wboit.flag_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: revealage_flag_buffer.as_entire_binding(),
+            }],
+        });
+
         Self {
             device,
             queue,
             surface,
             surface_config,
             mode: RenderMode::AlphaBlend,
+            use_revealage: true,
             camera_buffer,
             camera_bind_group,
             depth_texture_view,
@@ -313,12 +346,15 @@ impl Renderer {
             accum_texture_view,
             revealage_texture_view,
             wboit_composite_bind_group,
+            revealage_flag_buffer,
+            naive_revealage_bind_group,
             histogram_buffer,
             cdf_buffer,
             histo_params_buffer,
             histo_accum_bind_group,
             histo_composite_tex_bind_group,
             histo_composite_buf_bind_group,
+            histo_composite_flag_bind_group,
             histo_params,
             camera_bgl,
             object_bgl,
@@ -504,6 +540,11 @@ impl Renderer {
         let cam_uniform = camera.uniform();
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&cam_uniform));
+
+        // Update revealage flag
+        let flag: u32 = if self.use_revealage { 1 } else { 0 };
+        self.queue
+            .write_buffer(&self.revealage_flag_buffer, 0, bytemuck::bytes_of(&flag));
 
         // Update object transforms
         let mut visible: Vec<usize> = scene
@@ -711,6 +752,7 @@ impl Renderer {
 
             pass.set_pipeline(&self.naive_wboit.composite_pipeline);
             pass.set_bind_group(0, &self.wboit_composite_bind_group, &[]);
+            pass.set_bind_group(1, &self.naive_revealage_bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
     }
@@ -800,6 +842,7 @@ impl Renderer {
             pass.set_pipeline(&self.histogram_wboit.composite_pipeline);
             pass.set_bind_group(0, &self.histo_composite_tex_bind_group, &[]);
             pass.set_bind_group(1, &self.histo_composite_buf_bind_group, &[]);
+            pass.set_bind_group(2, &self.histo_composite_flag_bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
     }

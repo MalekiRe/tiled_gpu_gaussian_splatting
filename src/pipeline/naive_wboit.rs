@@ -4,6 +4,7 @@ pub struct NaiveWboitPipeline {
     pub accum_pipeline: wgpu::RenderPipeline,
     pub composite_pipeline: wgpu::RenderPipeline,
     pub composite_bgl: wgpu::BindGroupLayout,
+    pub flag_bgl: wgpu::BindGroupLayout,
 }
 
 impl NaiveWboitPipeline {
@@ -130,9 +131,23 @@ impl NaiveWboitPipeline {
             ],
         });
 
+        let flag_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("wboit flag bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
         let composite_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("wboit composite pipeline layout"),
-            bind_group_layouts: &[&composite_bgl],
+            bind_group_layouts: &[&composite_bgl, &flag_bgl],
             immediate_size: 0,
         });
 
@@ -170,6 +185,7 @@ impl NaiveWboitPipeline {
             accum_pipeline,
             composite_pipeline,
             composite_bgl,
+            flag_bgl,
         }
     }
 }

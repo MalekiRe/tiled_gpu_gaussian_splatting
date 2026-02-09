@@ -6,6 +6,7 @@ pub struct HistogramWboitPipeline {
     pub histo_accum_bgl: wgpu::BindGroupLayout,
     pub histo_composite_tex_bgl: wgpu::BindGroupLayout,
     pub histo_composite_buf_bgl: wgpu::BindGroupLayout,
+    pub flag_bgl: wgpu::BindGroupLayout,
 }
 
 impl HistogramWboitPipeline {
@@ -122,6 +123,20 @@ impl HistogramWboitPipeline {
                 ],
             });
 
+        let flag_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("histo flag bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
         let accum_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("histo_accum pipeline layout"),
             bind_group_layouts: &[camera_bgl, object_bgl, &histo_accum_bgl],
@@ -130,7 +145,7 @@ impl HistogramWboitPipeline {
 
         let composite_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("histo composite pipeline layout"),
-            bind_group_layouts: &[&histo_composite_tex_bgl, &histo_composite_buf_bgl],
+            bind_group_layouts: &[&histo_composite_tex_bgl, &histo_composite_buf_bgl, &flag_bgl],
             immediate_size: 0,
         });
 
@@ -156,6 +171,7 @@ impl HistogramWboitPipeline {
             histo_accum_bgl,
             histo_composite_tex_bgl,
             histo_composite_buf_bgl,
+            flag_bgl,
         }
     }
 }

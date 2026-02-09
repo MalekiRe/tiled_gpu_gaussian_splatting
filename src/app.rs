@@ -36,7 +36,7 @@ impl ApplicationHandler for App {
         }
 
         let attrs = Window::default_attributes()
-            .with_title("WBOIT Demo - Press 1/2/3 to switch modes, M to toggle meshes")
+            .with_title("WBOIT Demo - Press 1/2/3 to switch modes, A to toggle revealage, M to toggle meshes")
             .with_inner_size(winit::dpi::LogicalSize::new(1280, 720))
             .with_transparent(true);
 
@@ -85,6 +85,18 @@ impl ApplicationHandler for App {
                             "3" => {
                                 renderer.mode = RenderMode::HistogramWboit;
                                 println!("Mode: {}", renderer.mode.name());
+                            }
+                            "a" | "A" => {
+                                renderer.use_revealage = !renderer.use_revealage;
+                                println!(
+                                    "Revealage: {} (alpha computed via {})",
+                                    if renderer.use_revealage { "ON" } else { "OFF" },
+                                    if renderer.use_revealage {
+                                        "revealage buffer"
+                                    } else {
+                                        "exp(-accum.a) approximation"
+                                    }
+                                );
                             }
                             "r" | "R" => {
                                 self.camera.reset();
