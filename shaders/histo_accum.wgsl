@@ -64,7 +64,7 @@ fn fs_main(in: VertexOutput) -> WboitOutput {
 
     // Exponential weight spanning the usable f16 accumulation range
     // equalized_z=0 (near) → 2^13 = 8192, equalized_z=1 (far) → 2^-13 ≈ 1.2e-4
-    let w = alpha * clamp(exp2(13.0 - 26.0 * equalized_z), 1e-4, 8192.0);
+    let w = alpha * max(1.0 - equalized_z, 1e-4);
 
     var out: WboitOutput;
     out.accum = vec4<f32>(lit.rgb * alpha * w, alpha * w);
