@@ -5,7 +5,7 @@ use crate::pipeline::naive_wboit::NaiveWboitPipeline;
 use crate::scene::Scene;
 use crate::vertex::{CameraUniform, HistogramParams, ObjectUniform};
 
-const NUM_DEPTH_BINS: u32 = 64;
+const NUM_DEPTH_BINS: u32 = 512;
 const TILE_SIZE: u32 = 16;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -320,14 +320,15 @@ impl Renderer {
             ],
         });
 
-        let histo_composite_flag_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("histo composite flag bg"),
-            layout: &histogram_wboit.flag_bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: revealage_flag_buffer.as_entire_binding(),
-            }],
-        });
+        let histo_composite_flag_bind_group =
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("histo composite flag bg"),
+                layout: &histogram_wboit.flag_bgl,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: revealage_flag_buffer.as_entire_binding(),
+                }],
+            });
 
         Self {
             device,
@@ -763,7 +764,6 @@ impl Renderer {
         view: &wgpu::TextureView,
         visible: &[usize],
     ) {
-
         // Pass 1: Accumulation + histogram recording
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
