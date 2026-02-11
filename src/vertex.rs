@@ -54,8 +54,6 @@ pub struct ObjectUniform {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct HistogramParams {
-    pub tile_count_x: u32,
-    pub tile_count_y: u32,
     pub num_bins: u32,
     pub depth_range: f32,
 }

@@ -1,6 +1,4 @@
 struct HistoParams {
-    tile_count_x: u32,
-    tile_count_y: u32,
     num_bins: u32,
     depth_range: f32,
 };

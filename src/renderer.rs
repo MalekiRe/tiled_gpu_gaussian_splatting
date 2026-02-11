@@ -5,8 +5,7 @@ use crate::pipeline::naive_wboit::NaiveWboitPipeline;
 use crate::scene::Scene;
 use crate::vertex::{CameraUniform, HistogramParams, ObjectUniform};
 
-const NUM_DEPTH_BINS: u32 = 512;
-const TILE_SIZE: u32 = 16;
+const NUM_DEPTH_BINS: u32 = 4096;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RenderMode {
@@ -236,30 +235,25 @@ impl Renderer {
 
         // Histogram resources
         let histo_params = HistogramParams {
-            tile_count_x: surface_config.width.div_ceil(TILE_SIZE),
-            tile_count_y: surface_config.height.div_ceil(TILE_SIZE),
             num_bins: NUM_DEPTH_BINS,
             depth_range: 50.0,
         };
 
-        let total_bins = histo_params.tile_count_x * histo_params.tile_count_y * NUM_DEPTH_BINS;
         let histogram_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("histogram buffer"),
-            size: (total_bins * 4) as u64,
+            size: (NUM_DEPTH_BINS as u64) * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        // Initialize CDF with linear fallback
-        let cdf_init: Vec<f32> = (0..total_bins)
-            .map(|i| {
-                let bin = i % NUM_DEPTH_BINS;
-                (bin + 1) as f32 / NUM_DEPTH_BINS as f32
-            })
+        // Initialize CDF with linear fallback (+ 1 entry for total OD)
+        let cdf_size = NUM_DEPTH_BINS + 1;
+        let cdf_init: Vec<f32> = (0..cdf_size)
+            .map(|i| (i + 1) as f32 / NUM_DEPTH_BINS as f32)
             .collect();
         let cdf_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("cdf buffer"),
-            size: (total_bins * 4) as u64,
+            size: (cdf_size as u64) * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -460,31 +454,24 @@ impl Renderer {
 
         // Recreate histogram resources
         self.histo_params = HistogramParams {
-            tile_count_x: width.div_ceil(TILE_SIZE),
-            tile_count_y: height.div_ceil(TILE_SIZE),
             num_bins: NUM_DEPTH_BINS,
             depth_range: 50.0,
         };
 
-        let total_bins =
-            self.histo_params.tile_count_x * self.histo_params.tile_count_y * NUM_DEPTH_BINS;
-
         self.histogram_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("histogram buffer"),
-            size: (total_bins * 4) as u64,
+            size: (NUM_DEPTH_BINS as u64) * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let cdf_init: Vec<f32> = (0..total_bins)
-            .map(|i| {
-                let bin = i % NUM_DEPTH_BINS;
-                (bin + 1) as f32 / NUM_DEPTH_BINS as f32
-            })
+        let cdf_size = NUM_DEPTH_BINS + 1;
+        let cdf_init: Vec<f32> = (0..cdf_size)
+            .map(|i| (i + 1) as f32 / NUM_DEPTH_BINS as f32)
             .collect();
         self.cdf_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("cdf buffer"),
-            size: (total_bins * 4) as u64,
+            size: (cdf_size as u64) * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -516,9 +503,7 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: wgpu::BindingResource::TextureView(
-                            &self.revealage_views[1 - i],
-                        ),
+                        resource: wgpu::BindingResource::TextureView(&self.revealage_views[1 - i]),
                     },
                 ],
             })
