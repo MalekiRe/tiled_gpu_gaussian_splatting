@@ -32,7 +32,7 @@ impl Scene {
         // Overlapping semi-transparent quads at various depths and angles
         let quad_configs: [(glam::Vec3, glam::Quat, [f32; 4]); 6] = [
             (
-                glam::Vec3::new(0.0, 0.0, 0.0),
+                glam::Vec3::new(0.0, 0.0, 5.0),
                 glam::Quat::IDENTITY,
                 [1.0, 0.2, 0.2, 0.4],
             ),
@@ -47,12 +47,12 @@ impl Scene {
                 [0.2, 0.2, 1.0, 0.45],
             ),
             (
-                glam::Vec3::new(0.1, 0.3, 1.5),
+                glam::Vec3::new(0.1, 0.3, 6.5),
                 glam::Quat::from_rotation_x(0.2),
                 [1.0, 1.0, 0.2, 0.35],
             ),
             (
-                glam::Vec3::new(-0.3, -0.2, 0.3),
+                glam::Vec3::new(-0.3, -0.2, 5.3),
                 glam::Quat::from_rotation_z(0.3) * glam::Quat::from_rotation_y(0.5),
                 [1.0, 0.2, 1.0, 0.55],
             ),
@@ -123,5 +123,4 @@ impl Scene {
                     * glam::Mat4::from_scale(glam::Vec3::splat(1.2));
         }
     }
-
 }
