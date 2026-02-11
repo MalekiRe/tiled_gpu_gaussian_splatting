@@ -254,7 +254,7 @@ impl Renderer {
         let cdf_init: Vec<f32> = (0..total_bins)
             .map(|i| {
                 let bin = i % NUM_DEPTH_BINS;
-                bin as f32 / NUM_DEPTH_BINS as f32
+                (bin + 1) as f32 / NUM_DEPTH_BINS as f32
             })
             .collect();
         let cdf_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -479,7 +479,7 @@ impl Renderer {
         let cdf_init: Vec<f32> = (0..total_bins)
             .map(|i| {
                 let bin = i % NUM_DEPTH_BINS;
-                bin as f32 / NUM_DEPTH_BINS as f32
+                (bin + 1) as f32 / NUM_DEPTH_BINS as f32
             })
             .collect();
         self.cdf_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -497,7 +497,6 @@ impl Renderer {
             bytemuck::bytes_of(&self.histo_params),
         );
 
-        // Recreate double-buffered bind groups
         self.histo_accum_bind_groups = std::array::from_fn(|i| {
             self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("histo accum bg"),

@@ -5,6 +5,9 @@ struct HistoParams {
     depth_range: f32,
 };
 
+// Must match histo_accum.wgsl
+const OD_SCALE: f32 = 4096.0;
+
 @group(0) @binding(0) var accum_tex: texture_2d<f32>;
 @group(0) @binding(1) var revealage_tex: texture_2d<f32>;
 
@@ -43,40 +46,37 @@ fn fs_main(in: CompositeOutput) -> @location(0) vec4<f32> {
         let revealage = textureLoad(revealage_tex, coords, 0).r;
         alpha = 1.0 - revealage;
     } else {
-        // Exponential approximation: alpha = 1 - exp(-weighted_alpha_sum)
         alpha = 1.0 - exp(-accum.a);
     }
 
-    // Only pixel (0,0) builds the global CDF
+    // Only pixel (0,0) builds the global CDF from optical depth histogram
     let should_build_cdf = (u32(in.position.x) == 0u && u32(in.position.y) == 0u);
 
     if (should_build_cdf) {
-	    // 2. Build CDF from histogram, then clear histogram
-	    // Always use tile_index = 0 for global histogram
-	    let tile_index = 0u;
-	    let base = 0u;  // tile_index * num_bins = 0
+        let nb = histo_params.num_bins;
 
-	    // Compute total (atomicLoad is non-destructive, all fragments in tile read same values)
-	    var total = 0u;
-	    for (var b = 0u; b < histo_params.num_bins; b = b + 1u) {
-	        total = total + atomicLoad(&histogram[base + b]);
-	    }
+        // Prefix-sum of optical depth (dequantized from u32 atomics).
+        // Unlike a count histogram, this weights each bin by the actual occlusion
+        // contributed by its fragments, so high-alpha clusters get proportionally
+        // more of the CDF range.
+        var prefix_sum: f32 = 0.0;
+        for (var b = 0u; b < nb; b = b + 1u) {
+            let raw_od = f32(atomicLoad(&histogram[b])) / OD_SCALE;
+            prefix_sum += raw_od;
+            cdf[b] = prefix_sum;
+        }
 
-	    // Build CDF using atomicLoad (not atomicExchange — all fragments compute identical CDF)
-	    var running = 0u;
-	    for (var b = 0u; b < histo_params.num_bins; b = b + 1u) {
-	        running = running + atomicLoad(&histogram[base + b]);
-	        if total > 0u {
-	            cdf[base + b] = f32(running) / f32(total);
-	        } else {
-	            cdf[base + b] = f32(b) / f32(histo_params.num_bins);
-	        }
-	    }
+        let total_od = prefix_sum;
 
-	    // Clear histogram for next frame (all fragments write 0 — benign race)
-	    for (var b = 0u; b < histo_params.num_bins; b = b + 1u) {
-	        atomicStore(&histogram[base + b], 0u);
-	    }
+        // Normalize and clear histogram for next frame
+        for (var b = 0u; b < nb; b = b + 1u) {
+            if total_od > 0.0 {
+                cdf[b] = cdf[b] / total_od;
+            } else {
+                cdf[b] = f32(b + 1u) / f32(nb);
+            }
+            atomicStore(&histogram[b], 0u);
+        }
     }
 
     return vec4<f32>(avg_color * alpha, alpha);
