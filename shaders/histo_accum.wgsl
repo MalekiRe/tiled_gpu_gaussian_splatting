@@ -10,6 +10,7 @@ struct HistoParams {
 @group(2) @binding(0) var<storage, read_write> histogram: array<atomic<u32>>;
 @group(2) @binding(1) var<storage, read> cdf: array<f32>;
 @group(2) @binding(2) var<uniform> histo_params: HistoParams;
+@group(2) @binding(3) var prev_revealage_tex: texture_2d<f32>;
 
 struct WboitOutput {
     @location(0) accum: vec4<f32>,
@@ -62,9 +63,12 @@ fn fs_main(in: VertexOutput) -> WboitOutput {
     let cdf_lo = select(cdf[bin_lo - 1u], 0.0, bin_lo == 0u);
     let equalized_z = mix(cdf_lo, cdf_hi, t);
 
-    // Exponential weight spanning the usable f16 accumulation range
-    // equalized_z=0 (near) → 2^13 = 8192, equalized_z=1 (far) → 2^-13 ≈ 1.2e-4
-    let w = alpha * max(1.0 - equalized_z, 1e-4);
+    // Transmittance-based weight derived from compositing equation.
+    // True weight for layer i is T_i = (1-a)^i = R^(i/N) where R = total revealage.
+    // With histogram equalization, equalized_z ≈ i/N, giving w = R^equalized_z.
+    // Exact under uniform-alpha assumption. R is per-pixel from previous frame.
+    let prev_R = textureLoad(prev_revealage_tex, vec2<i32>(in.clip_position.xy), 0).r;
+    let w = pow(max(prev_R, 1e-4), equalized_z);
 
     var out: WboitOutput;
     out.accum = vec4<f32>(lit.rgb * alpha * w, alpha * w);

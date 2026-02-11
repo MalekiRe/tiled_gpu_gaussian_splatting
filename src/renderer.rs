@@ -52,10 +52,16 @@ pub struct Renderer {
     naive_wboit: NaiveWboitPipeline,
     histogram_wboit: HistogramWboitPipeline,
 
-    // WBOIT textures
+    // WBOIT textures (double-buffered revealage for transmittance feedback)
     accum_texture_view: wgpu::TextureView,
-    revealage_texture_view: wgpu::TextureView,
-    wboit_composite_bind_group: wgpu::BindGroup,
+    revealage_views: [wgpu::TextureView; 2],
+    frame_index: usize,
+
+    // Double-buffered bind groups indexed by frame_index:
+    // [i] renders to revealage_views[i], reads prev from revealage_views[1-i]
+    wboit_composite_bind_groups: [wgpu::BindGroup; 2],
+    histo_accum_bind_groups: [wgpu::BindGroup; 2],
+    histo_composite_tex_bind_groups: [wgpu::BindGroup; 2],
 
     // Revealage flag uniform
     revealage_flag_buffer: wgpu::Buffer,
@@ -65,8 +71,6 @@ pub struct Renderer {
     histogram_buffer: wgpu::Buffer,
     cdf_buffer: wgpu::Buffer,
     histo_params_buffer: wgpu::Buffer,
-    histo_accum_bind_group: wgpu::BindGroup,
-    histo_composite_tex_bind_group: wgpu::BindGroup,
     histo_composite_buf_bind_group: wgpu::BindGroup,
     histo_composite_flag_bind_group: wgpu::BindGroup,
     histo_params: HistogramParams,
@@ -200,23 +204,25 @@ impl Renderer {
         let depth_texture_view =
             create_depth_texture(&device, surface_config.width, surface_config.height);
 
-        // WBOIT textures
-        let (accum_texture_view, revealage_texture_view) =
+        // WBOIT textures (double-buffered revealage)
+        let (accum_texture_view, revealage_views) =
             create_wboit_textures(&device, surface_config.width, surface_config.height);
 
-        let wboit_composite_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("wboit composite bg"),
-            layout: &naive_wboit.composite_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&accum_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&revealage_texture_view),
-                },
-            ],
+        let wboit_composite_bind_groups = std::array::from_fn(|i| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("wboit composite bg"),
+                layout: &naive_wboit.composite_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&accum_texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&revealage_views[i]),
+                    },
+                ],
+            })
         });
 
         let naive_revealage_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -267,38 +273,48 @@ impl Renderer {
         });
         queue.write_buffer(&histo_params_buffer, 0, bytemuck::bytes_of(&histo_params));
 
-        let histo_accum_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("histo accum bg"),
-            layout: &histogram_wboit.histo_accum_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: histogram_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: cdf_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: histo_params_buffer.as_entire_binding(),
-                },
-            ],
+        // histo_accum_bind_groups[i]: used when frame_index=i, reads prev revealage from [1-i]
+        let histo_accum_bind_groups = std::array::from_fn(|i| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("histo accum bg"),
+                layout: &histogram_wboit.histo_accum_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: histogram_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: cdf_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: histo_params_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(&revealage_views[1 - i]),
+                    },
+                ],
+            })
         });
 
-        let histo_composite_tex_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("histo composite tex bg"),
-            layout: &histogram_wboit.histo_composite_tex_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&accum_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&revealage_texture_view),
-                },
-            ],
+        // histo_composite_tex_bind_groups[i]: reads current frame's accum + revealage[i]
+        let histo_composite_tex_bind_groups = std::array::from_fn(|i| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("histo composite tex bg"),
+                layout: &histogram_wboit.histo_composite_tex_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&accum_texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&revealage_views[i]),
+                    },
+                ],
+            })
         });
 
         let histo_composite_buf_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -345,15 +361,16 @@ impl Renderer {
             naive_wboit,
             histogram_wboit,
             accum_texture_view,
-            revealage_texture_view,
-            wboit_composite_bind_group,
+            revealage_views,
+            frame_index: 0,
+            wboit_composite_bind_groups,
+            histo_accum_bind_groups,
+            histo_composite_tex_bind_groups,
             revealage_flag_buffer,
             naive_revealage_bind_group,
             histogram_buffer,
             cdf_buffer,
             histo_params_buffer,
-            histo_accum_bind_group,
-            histo_composite_tex_bind_group,
             histo_composite_buf_bind_group,
             histo_composite_flag_bind_group,
             histo_params,
@@ -419,12 +436,12 @@ impl Renderer {
 
         self.depth_texture_view = create_depth_texture(&self.device, width, height);
 
-        let (accum, revealage) = create_wboit_textures(&self.device, width, height);
-        self.accum_texture_view = accum;
-        self.revealage_texture_view = revealage;
+        let (accum_view, revealage_views) = create_wboit_textures(&self.device, width, height);
+        self.accum_texture_view = accum_view;
+        self.revealage_views = revealage_views;
 
-        // Recreate WBOIT composite bind group
-        self.wboit_composite_bind_group =
+        // Recreate double-buffered bind groups
+        self.wboit_composite_bind_groups = std::array::from_fn(|i| {
             self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("wboit composite bg"),
                 layout: &self.naive_wboit.composite_bgl,
@@ -435,10 +452,11 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&self.revealage_texture_view),
+                        resource: wgpu::BindingResource::TextureView(&self.revealage_views[i]),
                     },
                 ],
-            });
+            })
+        });
 
         // Recreate histogram resources
         self.histo_params = HistogramParams {
@@ -479,27 +497,35 @@ impl Renderer {
             bytemuck::bytes_of(&self.histo_params),
         );
 
-        // Recreate bind groups
-        self.histo_accum_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("histo accum bg"),
-            layout: &self.histogram_wboit.histo_accum_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.histogram_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.cdf_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.histo_params_buffer.as_entire_binding(),
-                },
-            ],
+        // Recreate double-buffered bind groups
+        self.histo_accum_bind_groups = std::array::from_fn(|i| {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("histo accum bg"),
+                layout: &self.histogram_wboit.histo_accum_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.histogram_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.cdf_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.histo_params_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.revealage_views[1 - i],
+                        ),
+                    },
+                ],
+            })
         });
 
-        self.histo_composite_tex_bind_group =
+        self.histo_composite_tex_bind_groups = std::array::from_fn(|i| {
             self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("histo composite tex bg"),
                 layout: &self.histogram_wboit.histo_composite_tex_bgl,
@@ -510,10 +536,11 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&self.revealage_texture_view),
+                        resource: wgpu::BindingResource::TextureView(&self.revealage_views[i]),
                     },
                 ],
-            });
+            })
+        });
 
         self.histo_composite_buf_bind_group =
             self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -624,6 +651,9 @@ impl Renderer {
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
+
+        // Flip double buffer index
+        self.frame_index = 1 - self.frame_index;
     }
 
     fn render_alpha_blend(
@@ -677,6 +707,8 @@ impl Renderer {
         view: &wgpu::TextureView,
         visible: &[usize],
     ) {
+        let fi = self.frame_index;
+
         // Pass 1: Accumulation
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -692,7 +724,7 @@ impl Renderer {
                         depth_slice: None,
                     }),
                     Some(wgpu::RenderPassColorAttachment {
-                        view: &self.revealage_texture_view,
+                        view: &self.revealage_views[fi],
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -752,7 +784,7 @@ impl Renderer {
             });
 
             pass.set_pipeline(&self.naive_wboit.composite_pipeline);
-            pass.set_bind_group(0, &self.wboit_composite_bind_group, &[]);
+            pass.set_bind_group(0, &self.wboit_composite_bind_groups[fi], &[]);
             pass.set_bind_group(1, &self.naive_revealage_bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
@@ -764,7 +796,10 @@ impl Renderer {
         view: &wgpu::TextureView,
         visible: &[usize],
     ) {
+        let fi = self.frame_index;
+
         // Pass 1: Accumulation + histogram recording
+        // Renders to revealage_views[fi], reads prev from revealage_views[1-fi]
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("histo accum pass"),
@@ -779,7 +814,7 @@ impl Renderer {
                         depth_slice: None,
                     }),
                     Some(wgpu::RenderPassColorAttachment {
-                        view: &self.revealage_texture_view,
+                        view: &self.revealage_views[fi],
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -806,7 +841,7 @@ impl Renderer {
 
             pass.set_pipeline(&self.histogram_wboit.accum_pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            pass.set_bind_group(2, &self.histo_accum_bind_group, &[]);
+            pass.set_bind_group(2, &self.histo_accum_bind_groups[fi], &[]);
 
             for &idx in visible {
                 let mesh = &self.gpu_meshes[idx];
@@ -840,7 +875,7 @@ impl Renderer {
             });
 
             pass.set_pipeline(&self.histogram_wboit.composite_pipeline);
-            pass.set_bind_group(0, &self.histo_composite_tex_bind_group, &[]);
+            pass.set_bind_group(0, &self.histo_composite_tex_bind_groups[fi], &[]);
             pass.set_bind_group(1, &self.histo_composite_buf_bind_group, &[]);
             pass.set_bind_group(2, &self.histo_composite_flag_bind_group, &[]);
             pass.draw(0..3, 0..1);
@@ -870,7 +905,7 @@ fn create_wboit_textures(
     device: &wgpu::Device,
     width: u32,
     height: u32,
-) -> (wgpu::TextureView, wgpu::TextureView) {
+) -> (wgpu::TextureView, [wgpu::TextureView; 2]) {
     let accum = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("accum texture"),
         size: wgpu::Extent3d {
@@ -886,23 +921,27 @@ fn create_wboit_textures(
         view_formats: &[],
     });
 
-    let revealage = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("revealage texture"),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::R8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
+    // Double-buffered revealage: both are render targets and texture inputs
+    let revealage_views = std::array::from_fn(|i| {
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(&format!("revealage texture {i}")),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        tex.create_view(&wgpu::TextureViewDescriptor::default())
     });
 
     (
         accum.create_view(&wgpu::TextureViewDescriptor::default()),
-        revealage.create_view(&wgpu::TextureViewDescriptor::default()),
+        revealage_views,
     )
 }
