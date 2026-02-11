@@ -3,9 +3,10 @@ use crate::vertex::Vertex;
 pub struct HistogramWboitPipeline {
     pub accum_pipeline: wgpu::RenderPipeline,
     pub composite_pipeline: wgpu::RenderPipeline,
+    pub cdf_build_pipeline: wgpu::ComputePipeline,
     pub histo_accum_bgl: wgpu::BindGroupLayout,
     pub histo_composite_tex_bgl: wgpu::BindGroupLayout,
-    pub histo_composite_buf_bgl: wgpu::BindGroupLayout,
+    pub cdf_build_bgl: wgpu::BindGroupLayout,
     pub flag_bgl: wgpu::BindGroupLayout,
 }
 
@@ -20,7 +21,6 @@ impl HistogramWboitPipeline {
         let histo_accum_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("histo accum bgl"),
             entries: &[
-                // histogram: storage read_write (atomic)
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -31,7 +31,6 @@ impl HistogramWboitPipeline {
                     },
                     count: None,
                 },
-                // cdf: storage read
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -42,7 +41,6 @@ impl HistogramWboitPipeline {
                     },
                     count: None,
                 },
-                // params: uniform
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -53,7 +51,6 @@ impl HistogramWboitPipeline {
                     },
                     count: None,
                 },
-                // prev_revealage: texture (previous frame's revealage for transmittance weight)
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -94,45 +91,42 @@ impl HistogramWboitPipeline {
                 ],
             });
 
-        let histo_composite_buf_bgl =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("histo composite buf bgl"),
-                entries: &[
-                    // histogram: read_write (atomic)
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
+        // CDF build compute shader bind group layout (histogram rw, cdf rw, params uniform)
+        let cdf_build_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("cdf build bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                    // cdf: read_write
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                    // params: uniform
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                ],
-            });
+                    count: None,
+                },
+            ],
+        });
 
         let flag_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("histo flag bgl"),
@@ -156,7 +150,13 @@ impl HistogramWboitPipeline {
 
         let composite_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("histo composite pipeline layout"),
-            bind_group_layouts: &[&histo_composite_tex_bgl, &histo_composite_buf_bgl, &flag_bgl],
+            bind_group_layouts: &[&histo_composite_tex_bgl, &flag_bgl],
+            immediate_size: 0,
+        });
+
+        let cdf_build_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("cdf build pipeline layout"),
+            bind_group_layouts: &[&cdf_build_bgl],
             immediate_size: 0,
         });
 
@@ -164,8 +164,8 @@ impl HistogramWboitPipeline {
         let common_wgsl = include_str!("../../shaders/common.wgsl");
         let accum_wgsl = include_str!("../../shaders/histo_accum.wgsl");
         let composite_wgsl = include_str!("../../shaders/histo_composite.wgsl");
+        let cdf_build_wgsl = include_str!("../../shaders/histo_cdf_build.wgsl");
 
-        // Global variant only
         let (accum_pipeline, composite_pipeline) = create_pipeline_pair(
             device,
             surface_format,
@@ -176,12 +176,28 @@ impl HistogramWboitPipeline {
             "histo",
         );
 
+        let cdf_build_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("cdf_build shader"),
+            source: wgpu::ShaderSource::Wgsl(cdf_build_wgsl.into()),
+        });
+
+        let cdf_build_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("cdf_build pipeline"),
+                layout: Some(&cdf_build_layout),
+                module: &cdf_build_shader,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+
         Self {
             accum_pipeline,
             composite_pipeline,
+            cdf_build_pipeline,
             histo_accum_bgl,
             histo_composite_tex_bgl,
-            histo_composite_buf_bgl,
+            cdf_build_bgl,
             flag_bgl,
         }
     }
@@ -214,7 +230,6 @@ fn create_pipeline_pair(
             module: &accum_shader,
             entry_point: Some("fs_main"),
             targets: &[
-                // accum (Rgba16Float, additive)
                 Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Rgba16Float,
                     blend: Some(wgpu::BlendState {
@@ -231,7 +246,6 @@ fn create_pipeline_pair(
                     }),
                     write_mask: wgpu::ColorWrites::ALL,
                 }),
-                // revealage (R8Unorm, multiplicative)
                 Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::R8Unorm,
                     blend: Some(wgpu::BlendState {

@@ -70,7 +70,7 @@ pub struct Renderer {
     histogram_buffer: wgpu::Buffer,
     cdf_buffer: wgpu::Buffer,
     histo_params_buffer: wgpu::Buffer,
-    histo_composite_buf_bind_group: wgpu::BindGroup,
+    cdf_build_bind_group: wgpu::BindGroup,
     histo_composite_flag_bind_group: wgpu::BindGroup,
     histo_params: HistogramParams,
 
@@ -311,9 +311,9 @@ impl Renderer {
             })
         });
 
-        let histo_composite_buf_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("histo composite buf bg"),
-            layout: &histogram_wboit.histo_composite_buf_bgl,
+        let cdf_build_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("cdf build bg"),
+            layout: &histogram_wboit.cdf_build_bgl,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -365,7 +365,7 @@ impl Renderer {
             histogram_buffer,
             cdf_buffer,
             histo_params_buffer,
-            histo_composite_buf_bind_group,
+            cdf_build_bind_group,
             histo_composite_flag_bind_group,
             histo_params,
             camera_bgl,
@@ -526,10 +526,10 @@ impl Renderer {
             })
         });
 
-        self.histo_composite_buf_bind_group =
+        self.cdf_build_bind_group =
             self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("histo composite buf bg"),
-                layout: &self.histogram_wboit.histo_composite_buf_bgl,
+                label: Some("cdf build bg"),
+                layout: &self.histogram_wboit.cdf_build_bgl,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
@@ -836,7 +836,18 @@ impl Renderer {
             }
         }
 
-        // Pass 2: Composite + CDF build
+        // Pass 2: CDF build (compute)
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("cdf build pass"),
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.histogram_wboit.cdf_build_pipeline);
+            pass.set_bind_group(0, &self.cdf_build_bind_group, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+
+        // Pass 3: Composite
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("histo composite pass"),
@@ -860,8 +871,7 @@ impl Renderer {
 
             pass.set_pipeline(&self.histogram_wboit.composite_pipeline);
             pass.set_bind_group(0, &self.histo_composite_tex_bind_groups[fi], &[]);
-            pass.set_bind_group(1, &self.histo_composite_buf_bind_group, &[]);
-            pass.set_bind_group(2, &self.histo_composite_flag_bind_group, &[]);
+            pass.set_bind_group(1, &self.histo_composite_flag_bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
     }
