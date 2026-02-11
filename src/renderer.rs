@@ -5,7 +5,8 @@ use crate::pipeline::naive_wboit::NaiveWboitPipeline;
 use crate::scene::Scene;
 use crate::vertex::{CameraUniform, HistogramParams, ObjectUniform};
 
-const NUM_DEPTH_BINS: u32 = 256;
+const NUM_DEPTH_BINS: u32 = 64;
+const TILE_SIZE: u32 = 32;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RenderMode {
@@ -19,7 +20,7 @@ impl RenderMode {
         match self {
             RenderMode::AlphaBlend => "Alpha Blend",
             RenderMode::NaiveWboit => "Naive WBOIT",
-            RenderMode::HistogramWboit => "Histogram-Equalized WBOIT (global)",
+            RenderMode::HistogramWboit => "Histogram-Equalized WBOIT (tiled)",
         }
     }
 }
@@ -66,9 +67,10 @@ pub struct Renderer {
     revealage_flag_buffer: wgpu::Buffer,
     naive_revealage_bind_group: wgpu::BindGroup,
 
-    // Histogram WBOIT resources
+    // Histogram WBOIT resources (tiled)
     histogram_buffer: wgpu::Buffer,
-    cdf_buffer: wgpu::Buffer,
+    cdf_texture_view: wgpu::TextureView,
+    cdf_sampler: wgpu::Sampler,
     histo_params_buffer: wgpu::Buffer,
     cdf_build_bind_group: wgpu::BindGroup,
     histo_composite_flag_bind_group: wgpu::BindGroup,
@@ -233,31 +235,38 @@ impl Renderer {
             }],
         });
 
-        // Histogram resources
+        // Tiled histogram resources
+        let tiles_x = (surface_config.width + TILE_SIZE - 1) / TILE_SIZE;
+        let tiles_y = (surface_config.height + TILE_SIZE - 1) / TILE_SIZE;
+
         let histo_params = HistogramParams {
+            tile_count_x: tiles_x,
+            tile_count_y: tiles_y,
             num_bins: NUM_DEPTH_BINS,
-            depth_range: 50.0,
+            tile_size: TILE_SIZE,
         };
 
         let histogram_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("histogram buffer"),
-            size: (NUM_DEPTH_BINS as u64) * 4,
+            size: (tiles_x as u64) * (tiles_y as u64) * (NUM_DEPTH_BINS as u64) * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        // Initialize CDF with linear fallback (+ 1 entry for total OD)
-        let cdf_size = NUM_DEPTH_BINS + 1;
-        let cdf_init: Vec<f32> = (0..cdf_size)
-            .map(|i| (i + 1) as f32 / NUM_DEPTH_BINS as f32)
-            .collect();
-        let cdf_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("cdf buffer"),
-            size: (cdf_size as u64) * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
+        let (cdf_texture, cdf_texture_view) =
+            create_cdf_texture(&device, tiles_x, tiles_y, NUM_DEPTH_BINS);
+        let _ = cdf_texture; // view keeps texture alive via Arc internally
+
+        let cdf_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("cdf sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
         });
-        queue.write_buffer(&cdf_buffer, 0, bytemuck::cast_slice(&cdf_init));
 
         let histo_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("histo params buffer"),
@@ -279,14 +288,18 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: cdf_buffer.as_entire_binding(),
+                        resource: wgpu::BindingResource::TextureView(&cdf_texture_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: histo_params_buffer.as_entire_binding(),
+                        resource: wgpu::BindingResource::Sampler(&cdf_sampler),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
+                        resource: histo_params_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
                         resource: wgpu::BindingResource::TextureView(&revealage_views[1 - i]),
                     },
                 ],
@@ -321,7 +334,7 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: cdf_buffer.as_entire_binding(),
+                    resource: wgpu::BindingResource::TextureView(&cdf_texture_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
@@ -363,7 +376,8 @@ impl Renderer {
             revealage_flag_buffer,
             naive_revealage_bind_group,
             histogram_buffer,
-            cdf_buffer,
+            cdf_texture_view,
+            cdf_sampler,
             histo_params_buffer,
             cdf_build_bind_group,
             histo_composite_flag_bind_group,
@@ -452,31 +466,28 @@ impl Renderer {
             })
         });
 
-        // Recreate histogram resources
+        // Recreate tiled histogram resources
+        let tiles_x = (width + TILE_SIZE - 1) / TILE_SIZE;
+        let tiles_y = (height + TILE_SIZE - 1) / TILE_SIZE;
+
         self.histo_params = HistogramParams {
+            tile_count_x: tiles_x,
+            tile_count_y: tiles_y,
             num_bins: NUM_DEPTH_BINS,
-            depth_range: 50.0,
+            tile_size: TILE_SIZE,
         };
 
         self.histogram_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("histogram buffer"),
-            size: (NUM_DEPTH_BINS as u64) * 4,
+            size: (tiles_x as u64) * (tiles_y as u64) * (NUM_DEPTH_BINS as u64) * 4,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let cdf_size = NUM_DEPTH_BINS + 1;
-        let cdf_init: Vec<f32> = (0..cdf_size)
-            .map(|i| (i + 1) as f32 / NUM_DEPTH_BINS as f32)
-            .collect();
-        self.cdf_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("cdf buffer"),
-            size: (cdf_size as u64) * 4,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.queue
-            .write_buffer(&self.cdf_buffer, 0, bytemuck::cast_slice(&cdf_init));
+        let (cdf_texture, cdf_texture_view) =
+            create_cdf_texture(&self.device, tiles_x, tiles_y, NUM_DEPTH_BINS);
+        let _ = cdf_texture;
+        self.cdf_texture_view = cdf_texture_view;
 
         self.queue.write_buffer(
             &self.histo_params_buffer,
@@ -495,14 +506,18 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: self.cdf_buffer.as_entire_binding(),
+                        resource: wgpu::BindingResource::TextureView(&self.cdf_texture_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: self.histo_params_buffer.as_entire_binding(),
+                        resource: wgpu::BindingResource::Sampler(&self.cdf_sampler),
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
+                        resource: self.histo_params_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
                         resource: wgpu::BindingResource::TextureView(&self.revealage_views[1 - i]),
                     },
                 ],
@@ -537,7 +552,7 @@ impl Renderer {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: self.cdf_buffer.as_entire_binding(),
+                        resource: wgpu::BindingResource::TextureView(&self.cdf_texture_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
@@ -782,8 +797,7 @@ impl Renderer {
     ) {
         let fi = self.frame_index;
 
-        // Pass 1: Accumulation + histogram recording
-        // Renders to revealage_views[fi], reads prev from revealage_views[1-fi]
+        // Pass 1: Accumulation + tiled histogram recording
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("histo accum pass"),
@@ -836,7 +850,7 @@ impl Renderer {
             }
         }
 
-        // Pass 2: CDF build (compute)
+        // Pass 2: CDF build (compute) — one workgroup per tile
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("cdf build pass"),
@@ -844,7 +858,7 @@ impl Renderer {
             });
             pass.set_pipeline(&self.histogram_wboit.cdf_build_pipeline);
             pass.set_bind_group(0, &self.cdf_build_bind_group, &[]);
-            pass.dispatch_workgroups(1, 1, 1);
+            pass.dispatch_workgroups(self.histo_params.tile_count_x, self.histo_params.tile_count_y, 1);
         }
 
         // Pass 3: Composite
@@ -938,4 +952,28 @@ fn create_wboit_textures(
         accum.create_view(&wgpu::TextureViewDescriptor::default()),
         revealage_views,
     )
+}
+
+fn create_cdf_texture(
+    device: &wgpu::Device,
+    tiles_x: u32,
+    tiles_y: u32,
+    num_bins: u32,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("cdf 3d texture"),
+        size: wgpu::Extent3d {
+            width: tiles_x,
+            height: tiles_y,
+            depth_or_array_layers: num_bins,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D3,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
 }
