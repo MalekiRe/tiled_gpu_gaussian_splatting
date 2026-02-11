@@ -75,6 +75,7 @@ fn fs_main(in: CompositeOutput) -> @location(0) vec4<f32> {
             }
             atomicStore(&histogram[b], 0u);
         }
+
     }
 
     return vec4<f32>(avg_color * alpha, alpha);

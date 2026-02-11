@@ -68,8 +68,6 @@ fn fs_main(in: VertexOutput) -> WboitOutput {
     // When equalized_z comes from an optical depth CDF, it equals τ_before / τ_total_global.
     // Under the assumption that per-pixel OD distribution ≈ global OD distribution,
     // this gives T ≈ exp(-τ_before_pixel), which is exact transmittance.
-    // This correctly handles varying alpha: high-α bins consume more of the CDF,
-    // pushing subsequent layers' equalized_z higher and their weights lower.
     let prev_R = textureLoad(prev_revealage_tex, vec2<i32>(in.clip_position.xy), 0).r;
     let w = pow(max(prev_R, 1e-4), equalized_z);
 

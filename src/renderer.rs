@@ -5,7 +5,7 @@ use crate::pipeline::naive_wboit::NaiveWboitPipeline;
 use crate::scene::Scene;
 use crate::vertex::{CameraUniform, HistogramParams, ObjectUniform};
 
-const NUM_DEPTH_BINS: u32 = 4096;
+const NUM_DEPTH_BINS: u32 = 256;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RenderMode {

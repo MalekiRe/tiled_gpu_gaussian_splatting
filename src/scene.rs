@@ -30,7 +30,7 @@ impl Scene {
         let mut objects = Vec::new();
 
         // Overlapping semi-transparent quads at various depths and angles
-        let quad_configs: [(glam::Vec3, glam::Quat, [f32; 4]); 6] = [
+        let quad_configs: [(glam::Vec3, glam::Quat, [f32; 4]); _] = [
             (
                 glam::Vec3::new(0.0, 0.0, 5.0),
                 glam::Quat::IDENTITY,
