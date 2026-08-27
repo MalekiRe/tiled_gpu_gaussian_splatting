@@ -294,7 +294,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         let fragment_luminance = clamp(dot(in.color, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
         let luminance_gate = exp(-2.0 * abs(fragment_luminance - front_luminance));
         let raw_color_gate = exp(
-            -4.0 * dot(in.color - front_color, in.color - front_color),
+            -6.0 * dot(in.color - front_color, in.color - front_color),
         );
         let color_gate_strength = select(
             1.0,
