@@ -201,7 +201,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
                     let neighbor_normal_gate = smoothstep(
                         0.75,
                         0.95,
-                        dot(fallback_normal, decode_octahedral(neighbor.xy)),
+                        abs(dot(fallback_normal, decode_octahedral(neighbor.xy))),
                     );
                     let neighbor_weight = neighbor_depth_gate * neighbor_normal_gate;
                     reconstruction_color += neighbor_weight * decode_rgb3(neighbor.w);
