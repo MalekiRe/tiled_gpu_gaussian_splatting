@@ -79,7 +79,13 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
                 0.0,
                 1.0,
             );
-            observation_confidence = 0.75 + 0.25 * depth_agreement * observation_normal_agreement;
+            let observation_luminance_agreement = exp(
+                -2.0 * abs(primary_feature.w - fallback_feature.w),
+            );
+            observation_confidence = 0.75 + 0.25
+                * depth_agreement
+                * observation_normal_agreement
+                * observation_luminance_agreement;
         }
         let depth_delta = normalized_z - feature.z;
         let behind = smoothstep(0.0, 0.03 * radius_z, max(depth_delta, 0.0));
