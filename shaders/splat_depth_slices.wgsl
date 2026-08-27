@@ -309,7 +309,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     let core_warp = smoothstep(0.04, 0.18, alpha);
     let warped_quantile = mix(
         optical_quantile,
-        pow(optical_quantile, 0.80),
+        pow(optical_quantile, 0.77),
         core_warp,
     );
     let slice_position = clamp(warped_quantile * 3.0, 0.0, 3.0);
