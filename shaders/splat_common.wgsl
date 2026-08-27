@@ -19,15 +19,16 @@ struct Camera {
 
 struct Splat {
     pos_opacity: vec4<f32>,
-    cov_a: vec4<f32>,   // xx, xy, xz
-    cov_b: vec4<f32>,   // yy, yz, zz
-    color: vec4<f32>,   // rgb = DC band
+    cov_a: vec4<f32>,   // xx, xy, xz, heuristic normal x
+    cov_b: vec4<f32>,   // yy, yz, zz, heuristic normal y
+    color: vec4<f32>,   // rgb = DC band, w = heuristic normal z
 };
 
 struct SplatParams {
     count: u32,
     sh_degree: u32,
     splat_scale: f32,
+    scene_radius: f32,
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
@@ -44,6 +45,8 @@ struct SplatVsOut {
     @location(1) conic_opacity: vec4<f32>,
     // Offset from the Gaussian centre, in the same pixel space the conic lives in.
     @location(2) delta: vec2<f32>,
+    @location(3) @interpolate(flat) normal: vec3<f32>,
+    @location(4) @interpolate(flat) splat_index: u32,
 };
 
 const SH_C1: f32 = 0.4886025119029199;
@@ -112,6 +115,8 @@ fn culled() -> SplatVsOut {
     out.color = vec3<f32>(0.0);
     out.conic_opacity = vec4<f32>(0.0);
     out.delta = vec2<f32>(0.0);
+    out.normal = vec3<f32>(0.0);
+    out.splat_index = 0u;
     return out;
 }
 
@@ -221,6 +226,8 @@ fn splat_vertex(vertex_index: u32, instance_index: u32) -> SplatVsOut {
     out.color = eval_sh(idx, dir, s.color.rgb);
     out.conic_opacity = vec4<f32>(c * inv_det, -b * inv_det, a * inv_det, s.pos_opacity.w);
     out.delta = offset_px;
+    out.normal = normalize(vec3<f32>(s.cov_a.w, s.cov_b.w, s.color.w));
+    out.splat_index = idx;
     return out;
 }
 

@@ -10,6 +10,10 @@ pub struct SplatPipelines {
     pub wboit_pipeline: wgpu::RenderPipeline,
     pub histo_pipeline: wgpu::RenderPipeline,
     pub baked_histo_pipeline: wgpu::RenderPipeline,
+    pub front_feature_pipeline: wgpu::RenderPipeline,
+    pub front_feature_alt_pipeline: wgpu::RenderPipeline,
+    pub front_weighted_histo_pipeline: wgpu::RenderPipeline,
+    pub double_front_histo_pipeline: wgpu::RenderPipeline,
     pub splat_bgl: wgpu::BindGroupLayout,
 }
 
@@ -57,7 +61,7 @@ impl SplatPipelines {
                 storage(2), // depth-sorted draw order
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -251,11 +255,147 @@ impl SplatPipelines {
                 cache: None,
             });
 
+        let front_feature_shader = shader(
+            device,
+            "splat front feature shader",
+            include_str!("../../shaders/splat_front_feature.wgsl"),
+        );
+        let front_feature_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("splat front feature pipeline"),
+                layout: Some(&alpha_layout),
+                vertex: wgpu::VertexState {
+                    module: &front_feature_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &front_feature_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive,
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: true,
+                    depth_compare: wgpu::CompareFunction::Less,
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+
+        let front_feature_alt_shader = shader(
+            device,
+            "splat alternate front feature shader",
+            include_str!("../../shaders/splat_front_feature_alt.wgsl"),
+        );
+        let front_feature_alt_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("splat alternate front feature pipeline"),
+                layout: Some(&alpha_layout),
+                vertex: wgpu::VertexState {
+                    module: &front_feature_alt_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &front_feature_alt_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive,
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: true,
+                    depth_compare: wgpu::CompareFunction::Less,
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+
+        let front_weighted_histo_shader = shader(
+            device,
+            "splat front weighted histo shader",
+            include_str!("../../shaders/splat_front_weighted_histo.wgsl"),
+        );
+        let front_weighted_histo_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("splat front weighted histo pipeline"),
+                layout: Some(&histo_layout),
+                vertex: wgpu::VertexState {
+                    module: &front_weighted_histo_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &front_weighted_histo_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &mrt_targets,
+                    compilation_options: Default::default(),
+                }),
+                primitive,
+                depth_stencil: Some(depth_state()),
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+
+        let double_front_histo_shader = shader(
+            device,
+            "splat double front histo shader",
+            include_str!("../../shaders/splat_double_front_histo.wgsl"),
+        );
+        let double_front_histo_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("splat double front histo pipeline"),
+                layout: Some(&histo_layout),
+                vertex: wgpu::VertexState {
+                    module: &double_front_histo_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &double_front_histo_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &mrt_targets,
+                    compilation_options: Default::default(),
+                }),
+                primitive,
+                depth_stencil: Some(depth_state()),
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+
         Self {
             alpha_pipeline,
             wboit_pipeline,
             histo_pipeline,
             baked_histo_pipeline,
+            front_feature_pipeline,
+            front_feature_alt_pipeline,
+            front_weighted_histo_pipeline,
+            double_front_histo_pipeline,
             splat_bgl,
         }
     }

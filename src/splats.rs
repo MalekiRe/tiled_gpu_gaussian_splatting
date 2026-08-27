@@ -48,11 +48,11 @@ pub struct HighQualitySpatialDirectionalPrior {
 pub struct SplatGpu {
     /// `xyz` = world position, `w` = opacity.
     pub pos_opacity: [f32; 4],
-    /// 3D covariance upper triangle, part one: `xx, xy, xz`.
+    /// 3D covariance upper triangle, part one: `xx, xy, xz`; `w` is normal X.
     pub cov_a: [f32; 4],
-    /// 3D covariance upper triangle, part two: `yy, yz, zz`.
+    /// 3D covariance upper triangle, part two: `yy, yz, zz`; `w` is normal Y.
     pub cov_b: [f32; 4],
-    /// `rgb` = DC colour.
+    /// `rgb` = DC colour; `w` is normal Z.
     pub color: [f32; 4],
 }
 
@@ -91,17 +91,29 @@ impl SplatScene {
                 * glam::Mat3::from_diagonal(s);
             let cov = m * m.transpose();
 
+            // A Gaussian's thinnest covariance axis is the best normal-like signal the
+            // reconstruction gives us. Its sign is ambiguous and is fixed after finding
+            // the scene centre below.
+            let normal_axis = if s.x <= s.y && s.x <= s.z {
+                glam::Vec3::X
+            } else if s.y <= s.z {
+                glam::Vec3::Y
+            } else {
+                glam::Vec3::Z
+            };
+            let normal = (glam::Mat3::from_diagonal(FLIP) * rot * normal_axis).normalize();
+
             let p = glam::Vec3::from(data.pos[i]) * FLIP;
 
             gpu.push(SplatGpu {
                 pos_opacity: [p.x, p.y, p.z, data.opacity[i]],
-                cov_a: [cov.x_axis.x, cov.x_axis.y, cov.x_axis.z, 0.0],
-                cov_b: [cov.y_axis.y, cov.y_axis.z, cov.z_axis.z, 0.0],
+                cov_a: [cov.x_axis.x, cov.x_axis.y, cov.x_axis.z, normal.x],
+                cov_b: [cov.y_axis.y, cov.y_axis.z, cov.z_axis.z, normal.y],
                 color: [
                     data.color[i][0],
                     data.color[i][1],
                     data.color[i][2],
-                    0.0,
+                    normal.z,
                 ],
             });
         }
@@ -120,7 +132,7 @@ impl SplatScene {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        let gpu = permute(&gpu, &order);
+        let mut gpu = permute(&gpu, &order);
         let sh = if data.sh_degree > 0 {
             let mut out = vec![0.0f32; n * 45];
             for (dst, &src) in order.iter().enumerate() {
@@ -137,6 +149,22 @@ impl SplatScene {
             .map(|s| [s.pos_opacity[0], s.pos_opacity[1], s.pos_opacity[2]])
             .collect();
         let (center, radius) = robust_bounds(&positions);
+        // Covariance eigenvectors have no inherent sign. Point them away from the robust
+        // scene centre as a procedural, object-agnostic front/back heuristic.
+        for splat in &mut gpu {
+            let p = glam::Vec3::from_array([
+                splat.pos_opacity[0],
+                splat.pos_opacity[1],
+                splat.pos_opacity[2],
+            ]);
+            let mut normal = glam::Vec3::new(splat.cov_a[3], splat.cov_b[3], splat.color[3]);
+            if normal.dot(p - center) < 0.0 {
+                normal = -normal;
+            }
+            splat.cov_a[3] = normal.x;
+            splat.cov_b[3] = normal.y;
+            splat.color[3] = normal.z;
+        }
         let directional_prior = DirectionalHistogramPrior::bake(&gpu, center, radius);
         let spatial_directional_prior =
             SpatialDirectionalHistogramPrior::bake(&gpu, center, radius);

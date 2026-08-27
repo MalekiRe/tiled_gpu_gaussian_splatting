@@ -54,9 +54,9 @@ impl ApplicationHandler for App {
         }
 
         let title = if self.splats.is_some() {
-            "3DGS WBOIT Demo - 1/2/3/4/5/6 modes, A revealage, C cap, [ ] size, R reset"
+            "3DGS WBOIT Demo - 1/2/3/4/5/6/7 modes, A revealage, C cap, [ ] size, R reset"
         } else {
-            "WBOIT Demo - Press 1/2/3/4/5/6 to switch modes, A revealage, M meshes"
+            "WBOIT Demo - Press 1/2/3/4/5/6/7 to switch modes, A revealage, M meshes"
         };
         let attrs = Window::default_attributes()
             .with_title(title)
@@ -127,6 +127,10 @@ impl ApplicationHandler for App {
                             }
                             "6" => {
                                 renderer.mode = RenderMode::HighQualitySpatialBakedWboit;
+                                println!("Mode: {}", renderer.mode.name());
+                            }
+                            "7" => {
+                                renderer.mode = RenderMode::DoubleSampleFrontWboit;
                                 println!("Mode: {}", renderer.mode.name());
                             }
                             "a" | "A" => {

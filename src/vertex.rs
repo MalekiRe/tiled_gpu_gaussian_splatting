@@ -62,7 +62,8 @@ pub struct SplatParams {
     pub sh_degree: u32,
     /// Global multiplier on splat size; 1.0 is the reconstruction's own scale.
     pub splat_scale: f32,
-    pub _padding: u32,
+    /// Robust scene radius, used to express mode 6 depth tolerances in object units.
+    pub scene_radius: f32,
 }
 
 #[repr(C)]

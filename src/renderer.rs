@@ -6,8 +6,8 @@ use crate::pipeline::splat::SplatPipelines;
 use crate::scene::Scene;
 use crate::splats::{
     DIRECTIONAL_DEPTH_BINS, DirectionalHistogramPrior, HQ_SPATIAL_PRIOR_HEIGHT,
-    HQ_SPATIAL_PRIOR_WIDTH,
-    HighQualitySpatialDirectionalPrior, SpatialDirectionalHistogramPrior, SplatScene,
+    HQ_SPATIAL_PRIOR_WIDTH, HighQualitySpatialDirectionalPrior,
+    SpatialDirectionalHistogramPrior, SplatScene,
 };
 use crate::vertex::{
     CameraUniform, DirectionalPriorParams, HistogramParams, ObjectUniform, SplatParams,
@@ -24,6 +24,7 @@ pub enum RenderMode {
     DirectionalHistogramWboit = 4,
     SpatialBakedHistogramWboit = 5,
     HighQualitySpatialBakedWboit = 6,
+    DoubleSampleFrontWboit = 7,
 }
 
 impl RenderMode {
@@ -39,7 +40,10 @@ impl RenderMode {
                 "Spatial Baked Histogram WBOIT (atomics-free)"
             }
             RenderMode::HighQualitySpatialBakedWboit => {
-                "HQ Spatial Bake (256 views, 16x9, Gaussian footprints)"
+                "HQ Spatial Bake + Realtime Front Feature"
+            }
+            RenderMode::DoubleSampleFrontWboit => {
+                "HQ Front Feature + Two-Sample Confidence"
             }
         }
     }
@@ -56,6 +60,7 @@ struct SplatGpuState {
     draw_count: u32,
     sh_degree: u32,
     splat_scale: f32,
+    scene_radius: f32,
 }
 
 struct GpuMesh {
@@ -93,6 +98,10 @@ pub struct Renderer {
     // WBOIT textures (double-buffered revealage for transmittance feedback)
     accum_texture_view: wgpu::TextureView,
     revealage_views: [wgpu::TextureView; 2],
+    front_feature_view: wgpu::TextureView,
+    front_feature_depth_view: wgpu::TextureView,
+    front_feature_alt_view: wgpu::TextureView,
+    front_feature_alt_depth_view: wgpu::TextureView,
     frame_index: usize,
 
     // Double-buffered bind groups indexed by frame_index:
@@ -263,6 +272,17 @@ impl Renderer {
         // WBOIT textures (double-buffered revealage)
         let (accum_texture_view, revealage_views) =
             create_wboit_textures(&device, surface_config.width, surface_config.height);
+        let (front_feature_view, front_feature_depth_view) = create_front_feature_textures(
+            &device,
+            surface_config.width,
+            surface_config.height,
+        );
+        let (front_feature_alt_view, front_feature_alt_depth_view) =
+            create_front_feature_textures(
+                &device,
+                surface_config.width,
+                surface_config.height,
+            );
 
         let wboit_composite_bind_groups = std::array::from_fn(|i| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -389,6 +409,14 @@ impl Renderer {
                         binding: 4,
                         resource: wgpu::BindingResource::TextureView(&revealage_views[1 - i]),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(&front_feature_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::TextureView(&front_feature_alt_view),
+                    },
                 ],
             })
         });
@@ -466,6 +494,10 @@ impl Renderer {
             splats: None,
             accum_texture_view,
             revealage_views,
+            front_feature_view,
+            front_feature_depth_view,
+            front_feature_alt_view,
+            front_feature_alt_depth_view,
             frame_index: 0,
             wboit_composite_bind_groups,
             histo_accum_bind_groups,
@@ -571,6 +603,7 @@ impl Renderer {
             draw_count: total,
             sh_degree: scene.sh_degree,
             splat_scale: 1.0,
+            scene_radius: scene.radius,
         });
     }
 
@@ -621,7 +654,10 @@ impl Renderer {
                     &self.splat_pipelines.baked_histo_pipeline
                 }
                 RenderMode::HighQualitySpatialBakedWboit => {
-                    &self.splat_pipelines.baked_histo_pipeline
+                    &self.splat_pipelines.front_weighted_histo_pipeline
+                }
+                RenderMode::DoubleSampleFrontWboit => {
+                    &self.splat_pipelines.double_front_histo_pipeline
                 }
             };
             pass.set_pipeline(pipeline);
@@ -631,6 +667,7 @@ impl Renderer {
                 RenderMode::HistogramWboit | RenderMode::DirectionalHistogramWboit
                     | RenderMode::SpatialBakedHistogramWboit
                     | RenderMode::HighQualitySpatialBakedWboit
+                    | RenderMode::DoubleSampleFrontWboit
             ) {
                 pass.set_bind_group(2, &self.histo_accum_bind_groups[self.frame_index], &[]);
             }
@@ -647,6 +684,7 @@ impl Renderer {
             }
             RenderMode::SpatialBakedHistogramWboit => &self.histogram_wboit.accum_pipeline,
             RenderMode::HighQualitySpatialBakedWboit => &self.histogram_wboit.accum_pipeline,
+            RenderMode::DoubleSampleFrontWboit => &self.histogram_wboit.accum_pipeline,
         };
         pass.set_pipeline(pipeline);
         if matches!(
@@ -654,6 +692,7 @@ impl Renderer {
             RenderMode::HistogramWboit | RenderMode::DirectionalHistogramWboit
                 | RenderMode::SpatialBakedHistogramWboit
                 | RenderMode::HighQualitySpatialBakedWboit
+                | RenderMode::DoubleSampleFrontWboit
         ) {
             pass.set_bind_group(2, &self.histo_accum_bind_groups[self.frame_index], &[]);
         }
@@ -727,6 +766,14 @@ impl Renderer {
         let (accum_view, revealage_views) = create_wboit_textures(&self.device, width, height);
         self.accum_texture_view = accum_view;
         self.revealage_views = revealage_views;
+        let (front_feature_view, front_feature_depth_view) =
+            create_front_feature_textures(&self.device, width, height);
+        self.front_feature_view = front_feature_view;
+        self.front_feature_depth_view = front_feature_depth_view;
+        let (front_feature_alt_view, front_feature_alt_depth_view) =
+            create_front_feature_textures(&self.device, width, height);
+        self.front_feature_alt_view = front_feature_alt_view;
+        self.front_feature_alt_depth_view = front_feature_alt_depth_view;
 
         // Recreate double-buffered bind groups
         self.wboit_composite_bind_groups = std::array::from_fn(|i| {
@@ -799,6 +846,16 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 4,
                         resource: wgpu::BindingResource::TextureView(&self.revealage_views[1 - i]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(&self.front_feature_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.front_feature_alt_view,
+                        ),
                     },
                 ],
             })
@@ -890,8 +947,10 @@ impl Renderer {
                 bytemuck::cast_slice(&prior),
             );
         }
-        let use_high_quality_spatial_prior = self.mode == RenderMode::HighQualitySpatialBakedWboit
-            && self.high_quality_spatial_prior.is_some();
+        let use_high_quality_spatial_prior = matches!(
+            self.mode,
+            RenderMode::HighQualitySpatialBakedWboit | RenderMode::DoubleSampleFrontWboit
+        ) && self.high_quality_spatial_prior.is_some();
         if use_high_quality_spatial_prior {
             let prior = self
                 .high_quality_spatial_prior
@@ -929,7 +988,7 @@ impl Renderer {
                 count: sp.draw_count,
                 sh_degree: sp.sh_degree,
                 splat_scale: sp.splat_scale,
-                _padding: 0,
+                scene_radius: sp.scene_radius,
             };
             self.queue
                 .write_buffer(&sp.params_buffer, 0, bytemuck::bytes_of(&params));
@@ -1029,6 +1088,14 @@ impl Renderer {
                     &view,
                     &visible,
                     if self.splats.is_some() { 2 } else { 0 },
+                );
+            }
+            RenderMode::DoubleSampleFrontWboit => {
+                self.render_histogram_wboit(
+                    &mut encoder,
+                    &view,
+                    &visible,
+                    if self.splats.is_some() { 3 } else { 0 },
                 );
             }
         }
@@ -1165,6 +1232,69 @@ impl Renderer {
     ) {
         let fi = self.frame_index;
 
+        // Mode 6 first builds a per-pixel stochastic front surface. Ordinary depth
+        // testing chooses the closest alpha-surviving splat, so this stays atomics-free
+        // and does not depend on draw order.
+        if spatial_baked >= 2
+            && let Some(sp) = &self.splats
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("splat front feature pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.front_feature_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.front_feature_depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.splat_pipelines.front_feature_pipeline);
+            pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            pass.set_bind_group(1, &sp.bind_group, &[]);
+            pass.draw(0..4, 0..sp.draw_count);
+        }
+
+        if spatial_baked == 3
+            && let Some(sp) = &self.splats
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("splat alternate front feature pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.front_feature_alt_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.front_feature_alt_depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.splat_pipelines.front_feature_alt_pipeline);
+            pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            pass.set_bind_group(1, &sp.bind_group, &[]);
+            pass.draw(0..4, 0..sp.draw_count);
+        }
+
         // Mode 5's CDF depends only on the tiny baked volume, so build it before drawing.
         // The following fragment pass can consume it immediately and performs no atomics.
         if spatial_baked != 0 {
@@ -1172,7 +1302,7 @@ impl Renderer {
                 label: Some("spatial baked cdf build pass"),
                 ..Default::default()
             });
-            pass.set_pipeline(if spatial_baked == 2 {
+            pass.set_pipeline(if spatial_baked >= 2 {
                 &self
                     .histogram_wboit
                     .high_quality_spatial_cdf_build_pipeline
@@ -1230,7 +1360,9 @@ impl Renderer {
             self.draw_scene(
                 &mut pass,
                 visible,
-                if spatial_baked == 2 {
+                if spatial_baked == 3 {
+                    RenderMode::DoubleSampleFrontWboit
+                } else if spatial_baked == 2 {
                     RenderMode::HighQualitySpatialBakedWboit
                 } else if spatial_baked == 1 {
                     RenderMode::SpatialBakedHistogramWboit
@@ -1301,6 +1433,45 @@ fn create_depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu:
         view_formats: &[],
     });
     texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+fn create_front_feature_textures(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> (wgpu::TextureView, wgpu::TextureView) {
+    let feature = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("splat front feature texture"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let depth = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("splat front feature depth"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth32Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    (
+        feature.create_view(&wgpu::TextureViewDescriptor::default()),
+        depth.create_view(&wgpu::TextureViewDescriptor::default()),
+    )
 }
 
 fn create_wboit_textures(

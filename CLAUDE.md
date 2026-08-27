@@ -312,10 +312,13 @@ sorts the newest camera). At orbit speeds the one-frame lag is not visible.
 ## Controls
 > Implemented in `src/app.rs` `window_event()` handler
 
-- `1` / `2` / `3` / `4` / `5` / `6`: Switch rendering mode. Mode 4 blends a procedural 64-view
+- `1` / `2` / `3` / `4` / `5` / `6` / `7`: Switch rendering mode. Mode 4 blends a procedural 64-view
   directional optical-depth prior into the live tiled histogram. Mode 5 uses a spatial
   64-view x 8x8-tile x 32-bin bake and avoids live fragment histogram atomics. Mode 6
-  raises that to 256 views and a 16x9 grid, and rasterizes projected Gaussian footprints.
+  raises that to 256 views and a 16x9 grid, rasterizes projected Gaussian footprints, and
+  softly weights deeper splats using a realtime stochastic front-depth/normal feature. Mode 7
+  runs two independent front-feature samples and trusts their suppression signal in proportion
+  to their depth and normal agreement.
 - `M`: Toggle mesh visibility (toggles `scene.show_meshes`)
 - `A`: Toggle revealage vs. the `exp(-accum.a)` approximation
 - `C`: (3DGS only) Cycle the render cap: 100% / 50% / 25% / 10% of the scene
