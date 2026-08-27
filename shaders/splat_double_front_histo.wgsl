@@ -37,6 +37,11 @@ fn decode_rgb3(encoded: f32) -> vec3<f32> {
     return vec3<f32>(code % 8.0, floor(code / 8.0) % 8.0, floor(code / 64.0)) / 7.0;
 }
 
+fn decode_primary_luminance(encoded: f32) -> f32 {
+    let code = round(max(encoded - 1.0, 0.0) * 1024.0);
+    return floor(code / 16.0) / 63.0;
+}
+
 @vertex
 fn vs_main(
     @builtin(vertex_index) vertex_index: u32,
@@ -83,7 +88,7 @@ fn fs_main(in: SplatVsOut) -> WboitOutput {
     let front_normal = select(normal_b, normal_a, choose_a);
     let front_depth = select(b.z, a.z, choose_a);
     let fallback_luminance = dot(decode_rgb3(b.w), vec3<f32>(0.2126, 0.7152, 0.0722));
-    let front_luminance = select(fallback_luminance, a.w - 1.0, choose_a);
+    let front_luminance = select(fallback_luminance, decode_primary_luminance(a.w), choose_a);
     let confidence = select(
         0.5 * either_valid,
         both_valid * (0.5 + 0.5 * agreement),

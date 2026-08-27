@@ -35,6 +35,17 @@ fn decode_rgb3(encoded: f32) -> vec3<f32> {
     return vec3<f32>(code % 8.0, floor(code / 8.0) % 8.0, floor(code / 64.0)) / 7.0;
 }
 
+fn decode_primary_payload(encoded: f32) -> vec2<f32> {
+    let code = round(max(encoded - 1.0, 0.0) * 1024.0);
+    let sigma_code = code % 16.0;
+    let sigma_ratio = select(
+        0.0,
+        exp2(-10.0 + (sigma_code - 1.0) * (9.0 / 14.0)),
+        sigma_code > 0.0,
+    );
+    return vec2<f32>(floor(code / 16.0) / 63.0, sigma_ratio);
+}
+
 @vertex
 fn vs_main(
     @builtin(vertex_index) vertex_index: u32,
@@ -70,6 +81,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     let fallback_feature = textureLoad(front_feature_fallback, pixel, 0);
     let primary_valid = primary_feature.w >= 1.0;
     let fallback_valid = fallback_feature.w >= 1.0;
+    let primary_payload = decode_primary_payload(primary_feature.w);
     let fallback_color = decode_rgb3(fallback_feature.w);
     let fallback_luminance = dot(fallback_color, vec3<f32>(0.2126, 0.7152, 0.0722));
     let feature = select(fallback_feature, primary_feature, primary_valid);
@@ -77,7 +89,8 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         let radius_z = max(params.scene_radius / camera.depth_range, 1e-5);
         var observation_confidence = select(0.5, 1.0, primary_valid);
         var front_depth = feature.z;
-        var front_luminance = select(fallback_luminance, primary_feature.w - 1.0, primary_valid);
+        var front_luminance = select(fallback_luminance, primary_payload.x, primary_valid);
+        let front_depth_sigma = select(0.0, primary_payload.y * radius_z, primary_valid);
         var front_normal = decode_octahedral(feature.xy);
         if (primary_valid && fallback_valid) {
             let observation_depth_delta = abs(primary_feature.z - fallback_feature.z);
@@ -90,7 +103,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
                 1.0,
             );
             let observation_luminance_agreement = exp(
-                -2.0 * abs((primary_feature.w - 1.0) - fallback_luminance),
+                -2.0 * abs(primary_payload.x - fallback_luminance),
             );
             let observation_agreement = depth_agreement
                 * observation_normal_agreement
@@ -99,15 +112,18 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             let consensus_blend = 0.25 * observation_agreement;
             front_depth = mix(primary_feature.z, fallback_feature.z, consensus_blend);
             front_luminance = mix(
-                primary_feature.w - 1.0,
+                primary_payload.x,
                 fallback_luminance,
                 consensus_blend,
             );
             front_normal = normalize(mix(primary_normal, fallback_normal, consensus_blend));
         }
         let depth_delta = normalized_z - front_depth;
-        let local_thickness = max(0.03 * radius_z, 2.0 * in.depth_sigma);
-        let local_softness = max(0.08 * radius_z, 4.0 * in.depth_sigma);
+        let combined_depth_sigma = sqrt(
+            in.depth_sigma * in.depth_sigma + front_depth_sigma * front_depth_sigma,
+        );
+        let local_thickness = max(0.03 * radius_z, 2.0 * combined_depth_sigma);
+        let local_softness = max(0.08 * radius_z, 4.0 * combined_depth_sigma);
         let behind = smoothstep(0.0, local_thickness, max(depth_delta, 0.0));
         let depth_gate = exp(-pow(max(depth_delta, 0.0) / local_softness, 2.0));
         let normal_similarity = clamp(dot(in.normal, front_normal), -1.0, 1.0);

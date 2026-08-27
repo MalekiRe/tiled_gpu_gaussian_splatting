@@ -61,5 +61,12 @@ fn fs_main(in: SplatVsOut) -> @location(0) vec4<f32> {
         1.0,
     );
     let luminance = clamp(dot(in.color, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
-    return vec4<f32>(encode_octahedral(in.normal), normalized_z, 1.0 + luminance);
+    let radius_z = max(params.scene_radius / camera.depth_range, 1e-5);
+    let sigma_ratio = in.depth_sigma / radius_z;
+    var sigma_code = 0.0;
+    if (sigma_ratio >= exp2(-11.0)) {
+        sigma_code = 1.0 + round(clamp((log2(sigma_ratio) + 10.0) * (14.0 / 9.0), 0.0, 14.0));
+    }
+    let payload = round(luminance * 63.0) * 16.0 + sigma_code;
+    return vec4<f32>(encode_octahedral(in.normal), normalized_z, 1.0 + payload / 1024.0);
 }
