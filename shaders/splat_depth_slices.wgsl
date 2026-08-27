@@ -314,7 +314,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         0.0,
     ).r;
     let optical_density_signal = 1.0 - exp(-0.25 * mean_tile_tau);
-    let adaptive_quantile_exponent = mix(0.80, 0.66, optical_density_signal);
+    let adaptive_quantile_exponent = mix(0.80, 0.64, optical_density_signal);
     let dense_depth_support = smoothstep(0.04, 0.20, cdf_sample.g);
     let core_warp_end = mix(0.48, 0.72, dense_depth_support);
     let core_warp = smoothstep(0.04, core_warp_end, alpha);
