@@ -152,7 +152,10 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     let assigned_position = mix(slice_position, round(slice_position), hard_assignment);
     let lower_slice = u32(floor(assigned_position));
     let upper_slice = min(lower_slice + 1u, 3u);
-    let upper_weight = smoothstep(0.0, 1.0, fract(assigned_position));
+    let assignment_fraction = fract(assigned_position);
+    let cubic_weight = smoothstep(0.0, 1.0, assignment_fraction);
+    let basis_confidence = spatial_stability * depth_certainty;
+    let upper_weight = mix(assignment_fraction, cubic_weight, basis_confidence);
     let optical_depth = -log(max(1.0 - alpha, 1e-5));
     let contribution = vec4<f32>(in.color * optical_depth, optical_depth);
 
