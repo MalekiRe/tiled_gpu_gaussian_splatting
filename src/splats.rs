@@ -280,25 +280,75 @@ fn nearest_direction_weights_dynamic(
     directions: &[[f32; 3]],
     forward: glam::Vec3,
 ) -> ([(f32, usize); 3], [f32; 3]) {
-    let mut nearest = [(f32::NEG_INFINITY, 0usize); 3];
+    let mut candidates = [(f32::NEG_INFINITY, 0usize); 6];
     for (i, direction) in directions.iter().enumerate() {
         let dot = forward.dot(glam::Vec3::from_array(*direction));
-        if dot > nearest[0].0 {
-            nearest[2] = nearest[1];
-            nearest[1] = nearest[0];
-            nearest[0] = (dot, i);
-        } else if dot > nearest[1].0 {
-            nearest[2] = nearest[1];
-            nearest[1] = (dot, i);
-        } else if dot > nearest[2].0 {
-            nearest[2] = (dot, i);
+        for slot in 0..candidates.len() {
+            if dot > candidates[slot].0 {
+                for shift in ((slot + 1)..candidates.len()).rev() {
+                    candidates[shift] = candidates[shift - 1];
+                }
+                candidates[slot] = (dot, i);
+                break;
+            }
         }
     }
 
-    // Project the three sample directions onto the live view's tangent plane and
-    // find barycentric weights for its origin. This exactly reproduces angularly
-    // linear data whenever the samples surround the live direction.
-    let projected = nearest.map(|(_, index)| {
+    let mut best = None;
+    for a in 0..4 {
+        for b in (a + 1)..5 {
+            for c in (b + 1)..6 {
+                let samples = [candidates[a], candidates[b], candidates[c]];
+                let Some(weights) = tangent_barycentric_weights(directions, forward, samples)
+                else {
+                    continue;
+                };
+                if weights.iter().all(|weight| *weight >= -1e-5) {
+                    let score: f32 = samples.iter().map(|(dot, _)| 1.0 - dot).sum();
+                    if best.is_none_or(|(_, _, best_score)| score < best_score) {
+                        best = Some((samples, weights, score));
+                    }
+                }
+            }
+        }
+    }
+    if let Some((samples, mut weights, _)) = best {
+        for weight in &mut weights {
+            *weight = weight.max(0.0);
+        }
+        let sum: f32 = weights.iter().sum();
+        for weight in &mut weights {
+            *weight /= sum;
+        }
+        return (samples, weights);
+    }
+
+    let nearest = [candidates[0], candidates[1], candidates[2]];
+    if let Some(mut weights) = tangent_barycentric_weights(directions, forward, nearest) {
+        for weight in &mut weights {
+            *weight = weight.max(0.0);
+        }
+        let sum: f32 = weights.iter().sum();
+        for weight in &mut weights {
+            *weight /= sum;
+        }
+        return (nearest, weights);
+    }
+
+    let mut weights = nearest.map(|(dot, _)| 1.0 / (1e-3 + 1.0 - dot.clamp(-1.0, 1.0)));
+    let sum: f32 = weights.iter().sum();
+    for weight in &mut weights {
+        *weight /= sum;
+    }
+    (nearest, weights)
+}
+
+fn tangent_barycentric_weights(
+    directions: &[[f32; 3]],
+    forward: glam::Vec3,
+    samples: [(f32, usize); 3],
+) -> Option<[f32; 3]> {
+    let projected = samples.map(|(_, index)| {
         let direction = glam::Vec3::from_array(directions[index]);
         direction - forward * direction.dot(forward)
     });
@@ -314,18 +364,9 @@ fn nearest_direction_weights_dynamic(
     if denominator.abs() > 1e-12 {
         let w1 = (d11 * d20 - d01 * d21) / denominator;
         let w2 = (d00 * d21 - d01 * d20) / denominator;
-        let mut weights = [(1.0 - w1 - w2).max(0.0), w1.max(0.0), w2.max(0.0)];
-        let sum: f32 = weights.iter().sum();
-        for weight in &mut weights {
-            *weight /= sum;
-        }
-        return (nearest, weights);
+        return Some([1.0 - w1 - w2, w1, w2]);
     }
-
-    let mut weights = nearest.map(|(dot, _)| 1.0 / (1e-3 + 1.0 - dot.clamp(-1.0, 1.0)));
-    let sum: f32 = weights.iter().sum();
-    for weight in &mut weights { *weight /= sum; }
-    (nearest, weights)
+    None
 }
 
 impl SpatialDirectionalHistogramPrior {
