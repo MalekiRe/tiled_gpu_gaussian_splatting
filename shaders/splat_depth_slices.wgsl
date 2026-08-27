@@ -243,6 +243,21 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
                 additive_front_color,
                 additive_weight,
             );
+            let baked_chroma = cdf_center.ba * 2.0 - vec2f(1.0);
+            let baked_front_color = clamp(
+                vec3f(
+                    front_luminance + 0.4298 * baked_chroma.x - 0.7152 * baked_chroma.y,
+                    front_luminance - 0.0702 * baked_chroma.x + 0.2848 * baked_chroma.y,
+                    front_luminance - 0.5702 * baked_chroma.x - 0.7152 * baked_chroma.y,
+                ),
+                vec3f(0.0),
+                vec3f(1.0),
+            );
+            front_color = mix(
+                front_color,
+                baked_front_color,
+                0.10 * (1.0 - observation_agreement),
+            );
             front_normal = normalize(mix(primary_normal, fallback_normal, consensus_blend));
         }
         let depth_delta = normalized_z - front_depth;
