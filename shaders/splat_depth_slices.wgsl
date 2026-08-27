@@ -93,7 +93,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         0.0,
     );
     let sharpened_sample = clamp(
-        3.5 * cdf_center - 1.25 * (cdf_front + cdf_back),
+        3.7 * cdf_center - 1.35 * (cdf_front + cdf_back),
         vec4<f32>(0.0),
         vec4<f32>(1.0),
     );
