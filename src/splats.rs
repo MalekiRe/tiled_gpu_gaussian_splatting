@@ -11,7 +11,7 @@ pub const DIRECTIONAL_DEPTH_BINS: usize = 64;
 pub const SPATIAL_PRIOR_WIDTH: usize = 8;
 pub const SPATIAL_PRIOR_HEIGHT: usize = 8;
 pub const SPATIAL_PRIOR_DEPTH_BINS: usize = 32;
-pub const HQ_DIRECTIONAL_VIEW_COUNT: usize = 256;
+pub const HQ_DIRECTIONAL_VIEW_COUNT: usize = 512;
 pub const HQ_SPATIAL_PRIOR_WIDTH: usize = 20;
 pub const HQ_SPATIAL_PRIOR_HEIGHT: usize = 12;
 
