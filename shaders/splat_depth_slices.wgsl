@@ -195,7 +195,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
                 let neighbor = textureLoad(front_feature_fallback, neighbor_pixel, 0);
                 if (neighbor.w >= 1.0) {
                     let neighbor_depth_gate = exp(-pow(
-                        abs(neighbor.z - fallback_feature.z) / (0.08 * radius_z),
+                        abs(neighbor.z - fallback_feature.z) / (0.12 * radius_z),
                         2.0,
                     ));
                     let neighbor_weight = neighbor_depth_gate;
