@@ -199,8 +199,8 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
                         2.0,
                     ));
                     let neighbor_normal_gate = smoothstep(
-                        0.60,
-                        0.90,
+                        0.30,
+                        0.85,
                         abs(dot(fallback_normal, decode_octahedral(neighbor.xy))),
                     );
                     let neighbor_weight = neighbor_depth_gate * neighbor_normal_gate;
