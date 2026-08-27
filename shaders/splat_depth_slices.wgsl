@@ -68,6 +68,8 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     if (feature.w >= 1.0) {
         let radius_z = max(params.scene_radius / camera.depth_range, 1e-5);
         var observation_confidence = select(0.5, 1.0, primary_valid);
+        var front_depth = feature.z;
+        var front_luminance = feature.w - 1.0;
         if (primary_valid && fallback_valid) {
             let observation_depth_delta = abs(primary_feature.z - fallback_feature.z);
             let depth_agreement = exp(-pow(observation_depth_delta / (0.12 * radius_z), 2.0));
@@ -82,18 +84,25 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             let observation_luminance_agreement = exp(
                 -2.0 * abs(primary_feature.w - fallback_feature.w),
             );
-            observation_confidence = 0.75 + 0.25
-                * depth_agreement
+            let observation_agreement = depth_agreement
                 * observation_normal_agreement
                 * observation_luminance_agreement;
+            observation_confidence = 0.75 + 0.25 * observation_agreement;
+            let consensus_blend = 0.25 * observation_agreement;
+            front_depth = mix(primary_feature.z, fallback_feature.z, consensus_blend);
+            front_luminance = mix(
+                primary_feature.w - 1.0,
+                fallback_feature.w - 1.0,
+                consensus_blend,
+            );
         }
-        let depth_delta = normalized_z - feature.z;
+        let depth_delta = normalized_z - front_depth;
         let behind = smoothstep(0.0, 0.03 * radius_z, max(depth_delta, 0.0));
         let depth_gate = exp(-pow(max(depth_delta, 0.0) / (0.08 * radius_z), 2.0));
         let normal_similarity = clamp(dot(in.normal, decode_octahedral(feature.xy)), -1.0, 1.0);
         let normal_gate = exp(-32.0 * (1.0 - normal_similarity));
         let fragment_luminance = clamp(dot(in.color, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
-        let luminance_gate = exp(-2.0 * abs(fragment_luminance - (feature.w - 1.0)));
+        let luminance_gate = exp(-2.0 * abs(fragment_luminance - front_luminance));
         let appearance_agreement = normal_gate * luminance_gate;
         let front_band = 1.0 - smoothstep(
             0.0,
