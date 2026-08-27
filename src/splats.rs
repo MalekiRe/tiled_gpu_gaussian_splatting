@@ -447,7 +447,7 @@ impl HighQualitySpatialDirectionalPrior {
 
         for (view, direction) in directions.iter().enumerate() {
             let forward = glam::Vec3::from_array(*direction);
-            let helper = if forward.y.abs() < 0.95 {
+            let helper = if forward.y.abs() < 0.9999 {
                 glam::Vec3::Y
             } else {
                 glam::Vec3::X
