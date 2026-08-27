@@ -2,6 +2,7 @@
 //! the render cap, and a background depth sorter for the alpha-blended mode.
 
 use std::sync::Arc;
+use half::f16;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
 use crate::ply::SplatData;
@@ -38,7 +39,7 @@ pub struct SpatialDirectionalHistogramPrior {
 #[derive(Clone)]
 pub struct HighQualitySpatialDirectionalPrior {
     directions: Vec<[f32; 3]>,
-    histograms: Vec<f32>,
+    histograms: Vec<f16>,
     radius: f32,
 }
 
@@ -581,7 +582,7 @@ impl HighQualitySpatialDirectionalPrior {
 
         Self {
             directions,
-            histograms,
+            histograms: histograms.into_iter().map(f16::from_f32).collect(),
             radius,
         }
     }
@@ -630,11 +631,17 @@ impl HighQualitySpatialDirectionalPrior {
                     let mut value = 0.0;
                     for (neighbor, weight) in nearest.iter().zip(weights) {
                         let top = self.histograms[Self::index(neighbor.1, x0, y0, source_bin)]
+                            .to_f32()
                             * (1.0 - fx)
-                            + self.histograms[Self::index(neighbor.1, x1, y0, source_bin)] * fx;
+                            + self.histograms[Self::index(neighbor.1, x1, y0, source_bin)]
+                                .to_f32()
+                                * fx;
                         let bottom = self.histograms[Self::index(neighbor.1, x0, y1, source_bin)]
+                            .to_f32()
                             * (1.0 - fx)
-                            + self.histograms[Self::index(neighbor.1, x1, y1, source_bin)] * fx;
+                            + self.histograms[Self::index(neighbor.1, x1, y1, source_bin)]
+                                .to_f32()
+                                * fx;
                         value += weight * (top * (1.0 - fy) + bottom * fy);
                     }
                     let camera_t = ((distance + offset - near) / depth_range).clamp(0.0, 1.0);
