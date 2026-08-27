@@ -310,7 +310,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             * observation_confidence;
         let dense_disagreement = 1.0 - pow(
             max(1.0 - disagreement, 0.0),
-            mix(1.0, 1.05, optical_density_signal),
+            mix(1.0, 1.10, optical_density_signal),
         );
         optical_quantile = mix(optical_quantile, 1.0, dense_disagreement);
     }
