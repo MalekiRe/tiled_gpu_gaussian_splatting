@@ -343,7 +343,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     let basis_depth_certainty = mix(
         depth_certainty,
         1.0,
-        0.40 * optical_density_signal,
+        0.80 * optical_density_signal,
     );
     let basis_confidence = spatial_stability * basis_depth_certainty;
     let upper_weight = mix(assignment_fraction, cubic_weight, basis_confidence);
