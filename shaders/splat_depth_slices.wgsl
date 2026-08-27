@@ -121,7 +121,34 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     let fallback_valid = fallback_feature.w >= 1.0;
     let primary_payload = decode_primary_payload(primary_feature.w);
     let fallback_color = decode_rgb3(fallback_feature.w);
-    let fallback_luminance = dot(fallback_color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    var filtered_fallback_color = fallback_color;
+    var filtered_fallback_weight = 1.0;
+    if (fallback_valid) {
+        let fallback_size = vec2<i32>(textureDimensions(front_feature_fallback));
+        let neighbor_offsets = array<vec2<i32>, 8>(
+            vec2<i32>(-1, 0), vec2<i32>(1, 0),
+            vec2<i32>(0, -1), vec2<i32>(0, 1),
+            vec2<i32>(-1, -1), vec2<i32>(1, -1),
+            vec2<i32>(-1, 1), vec2<i32>(1, 1),
+        );
+        for (var neighbor_index = 0u; neighbor_index < 8u; neighbor_index++) {
+            let neighbor_pixel = clamp(
+                pixel + neighbor_offsets[neighbor_index],
+                vec2<i32>(0),
+                fallback_size - vec2<i32>(1),
+            );
+            let neighbor = textureLoad(front_feature_fallback, neighbor_pixel, 0);
+            if (neighbor.w >= 1.0) {
+                filtered_fallback_color += decode_rgb3(neighbor.w);
+                filtered_fallback_weight += 1.0;
+            }
+        }
+        filtered_fallback_color /= filtered_fallback_weight;
+    }
+    let fallback_luminance = dot(
+        filtered_fallback_color,
+        vec3<f32>(0.2126, 0.7152, 0.0722),
+    );
     let feature = select(fallback_feature, primary_feature, primary_valid);
     if (feature.w >= 1.0) {
         let radius_z = max(params.scene_radius / camera.depth_range, 1e-5);
@@ -129,7 +156,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         var coherent_layer_evidence = 0.0;
         var front_depth = feature.z;
         var front_luminance = select(fallback_luminance, primary_payload.x, primary_valid);
-        var front_color = fallback_color;
+        var front_color = filtered_fallback_color;
         if (primary_valid && !fallback_valid) {
             // Recombine the primary's precise luminance with the coarse baked
             // Co/Cg tile moment carried in the CDF's otherwise-unused channels.
@@ -176,31 +203,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
                 fallback_luminance,
                 consensus_blend,
             );
-            // The fallback's packed RGB is deliberately noisy.  Average only
-            // color from strongly coplanar neighbors; depth, normal, and all
-            // confidence decisions continue to use the unbiased center sample.
-            var reconstruction_color = fallback_color;
-            var reconstruction_weight = 1.0;
-            let fallback_size = vec2<i32>(textureDimensions(front_feature_fallback));
-            let neighbor_offsets = array<vec2<i32>, 8>(
-                vec2<i32>(-1, 0), vec2<i32>(1, 0),
-                vec2<i32>(0, -1), vec2<i32>(0, 1),
-                vec2<i32>(-1, -1), vec2<i32>(1, -1),
-                vec2<i32>(-1, 1), vec2<i32>(1, 1),
-            );
-            for (var neighbor_index = 0u; neighbor_index < 8u; neighbor_index++) {
-                let neighbor_pixel = clamp(
-                    pixel + neighbor_offsets[neighbor_index],
-                    vec2<i32>(0),
-                    fallback_size - vec2<i32>(1),
-                );
-                let neighbor = textureLoad(front_feature_fallback, neighbor_pixel, 0);
-                if (neighbor.w >= 1.0) {
-                    reconstruction_color += decode_rgb3(neighbor.w);
-                    reconstruction_weight += 1.0;
-                }
-            }
-            reconstruction_color /= reconstruction_weight;
+            let reconstruction_color = filtered_fallback_color;
             let reconstruction_luminance = dot(
                 reconstruction_color,
                 vec3<f32>(0.2126, 0.7152, 0.0722),
@@ -251,31 +254,6 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
                 0.025 * (1.0 - observation_agreement),
             );
             front_normal = normalize(mix(primary_normal, fallback_normal, consensus_blend));
-        }
-        if (!primary_valid && fallback_valid) {
-            var fringe_color = fallback_color;
-            var fringe_weight = 1.0;
-            let fallback_size = vec2<i32>(textureDimensions(front_feature_fallback));
-            let neighbor_offsets = array<vec2<i32>, 8>(
-                vec2<i32>(-1, 0), vec2<i32>(1, 0),
-                vec2<i32>(0, -1), vec2<i32>(0, 1),
-                vec2<i32>(-1, -1), vec2<i32>(1, -1),
-                vec2<i32>(-1, 1), vec2<i32>(1, 1),
-            );
-            for (var neighbor_index = 0u; neighbor_index < 8u; neighbor_index++) {
-                let neighbor_pixel = clamp(
-                    pixel + neighbor_offsets[neighbor_index],
-                    vec2<i32>(0),
-                    fallback_size - vec2<i32>(1),
-                );
-                let neighbor = textureLoad(front_feature_fallback, neighbor_pixel, 0);
-                if (neighbor.w >= 1.0) {
-                    fringe_color += decode_rgb3(neighbor.w);
-                    fringe_weight += 1.0;
-                }
-            }
-            front_color = fringe_color / fringe_weight;
-            front_luminance = dot(front_color, vec3f(0.2126, 0.7152, 0.0722));
         }
         let depth_delta = normalized_z - front_depth;
         let combined_depth_sigma = sqrt(
