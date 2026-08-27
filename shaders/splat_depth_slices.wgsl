@@ -92,10 +92,18 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         vec3f(u, v, clamp(cdf_z + cdf_extent, 0.0, 1.0)),
         0.0,
     );
-    let cdf_sample = clamp(
+    let sharpened_cdf = clamp(
         1.8 * cdf_center - 0.4 * (cdf_front + cdf_back),
         vec4<f32>(0.0),
         vec4<f32>(1.0),
+    );
+    let cdf_sample = vec4<f32>(
+        clamp(
+            sharpened_cdf.r,
+            min(cdf_front.r, cdf_back.r),
+            max(cdf_front.r, cdf_back.r),
+        ),
+        sharpened_cdf.gba,
     );
     var optical_quantile = cdf_sample.r;
     let pixel = vec2<i32>(in.clip_position.xy);
