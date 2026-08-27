@@ -330,9 +330,11 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     let assignment_gradient = fwidth(slice_position);
     let spatial_stability = 1.0 - smoothstep(0.10, 0.60, assignment_gradient);
     let depth_certainty = 1.0 - smoothstep(0.04, 0.20, cdf_sample.g);
+    let hard_depth_certainty = depth_certainty
+        * (1.0 - 0.20 * optical_density_signal);
     let hard_assignment = smoothstep(0.10, 0.24, alpha)
         * spatial_stability
-        * depth_certainty;
+        * hard_depth_certainty;
     let assigned_position = mix(slice_position, round(slice_position), hard_assignment);
     let lower_slice = u32(floor(assigned_position));
     let upper_slice = min(lower_slice + 1u, 3u);
