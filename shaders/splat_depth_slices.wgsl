@@ -124,6 +124,11 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     let mean_tile_tau = tile_optical_data.r;
     let optical_density_signal = 1.0 - exp(-0.25 * mean_tile_tau);
     let quantile_depths = tile_optical_data.gba;
+    let depth_span_signal = smoothstep(
+        0.10,
+        0.45,
+        quantile_depths.z - quantile_depths.x,
+    );
     var knot_quantile = 0.0;
     var knot_pdf = 0.0;
     if (normalized_z < quantile_depths.x) {
@@ -338,7 +343,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             * observation_confidence;
         let dense_disagreement = 1.0 - pow(
             max(1.0 - disagreement, 0.0),
-            mix(1.0, 1.10, optical_density_signal),
+            1.0 + 0.10 * optical_density_signal + 0.05 * depth_span_signal,
         );
         optical_quantile = mix(optical_quantile, 1.0, dense_disagreement);
     }
