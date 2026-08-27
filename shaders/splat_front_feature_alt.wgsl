@@ -41,8 +41,13 @@ fn encode_octahedral(normal: vec3<f32>) -> vec2<f32> {
     return projected * 0.5 + 0.5;
 }
 
+struct FrontFeatureOutput {
+    @location(0) feature: vec4<f32>,
+    @location(1) color: vec4<f32>,
+};
+
 @fragment
-fn fs_main(in: SplatVsOut) -> @location(0) vec4<f32> {
+fn fs_main(in: SplatVsOut) -> FrontFeatureOutput {
     let alpha = splat_alpha(in);
     if (alpha < 0.0) {
         discard;
@@ -59,5 +64,12 @@ fn fs_main(in: SplatVsOut) -> @location(0) vec4<f32> {
     );
     let rgb3 = round(clamp(in.color, vec3<f32>(0.0), vec3<f32>(1.0)) * 7.0);
     let packed_rgb = rgb3.r + 8.0 * rgb3.g + 64.0 * rgb3.b;
-    return vec4<f32>(encode_octahedral(in.normal), normalized_z, 1.0 + packed_rgb / 512.0);
+    var out: FrontFeatureOutput;
+    out.feature = vec4<f32>(
+        encode_octahedral(in.normal),
+        normalized_z,
+        1.0 + packed_rgb / 512.0,
+    );
+    out.color = vec4f(clamp(in.color, vec3f(0.0), vec3f(1.0)), 1.0);
+    return out;
 }

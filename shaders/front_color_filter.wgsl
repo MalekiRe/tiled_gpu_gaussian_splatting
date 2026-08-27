@@ -1,14 +1,11 @@
 @group(0) @binding(0) var fallback_feature: texture_2d<f32>;
 @group(0) @binding(1) var filtered_color_out: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(2) var fallback_color: texture_2d<f32>;
 
 const WORKGROUP_WIDTH: u32 = 8u;
 const TILE_WIDTH: u32 = WORKGROUP_WIDTH + 2u;
 var<workgroup> feature_tile: array<vec4<f32>, 100>;
-
-fn decode_rgb3(encoded: f32) -> vec3<f32> {
-    let code = round(max(encoded - 1.0, 0.0) * 512.0);
-    return vec3f(code % 8.0, floor(code / 8.0) % 8.0, floor(code / 64.0)) / 7.0;
-}
+var<workgroup> color_tile: array<vec4<f32>, 100>;
 
 @compute @workgroup_size(8, 8, 1)
 fn main(
@@ -23,6 +20,7 @@ fn main(
         let tile_position = vec2i(vec2u(tile_index % TILE_WIDTH, tile_index / TILE_WIDTH));
         let sample_pixel = clamp(tile_origin + tile_position, vec2i(0), size - vec2i(1));
         feature_tile[tile_index] = textureLoad(fallback_feature, sample_pixel, 0);
+        color_tile[tile_index] = textureLoad(fallback_color, sample_pixel, 0);
     }
     workgroupBarrier();
 
@@ -47,7 +45,7 @@ fn main(
             let sample_index = u32(i32(center_index) + y * i32(TILE_WIDTH) + x);
             let feature = feature_tile[sample_index];
             if (feature.w >= 1.0) {
-                let color = decode_rgb3(feature.w);
+                let color = color_tile[sample_index].rgb;
                 color_sum += color;
                 color_min = min(color_min, color);
                 color_max = max(color_max, color);
