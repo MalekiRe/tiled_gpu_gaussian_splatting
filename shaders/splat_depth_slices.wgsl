@@ -152,12 +152,18 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
                 filtered_fallback_weight += 1.0;
             }
         }
+        let raw_fallback_mean = filtered_fallback_color / filtered_fallback_weight;
         if (filtered_fallback_weight > 2.0) {
-            filtered_fallback_color = (
+            let trimmed_fallback_mean = (
                 filtered_fallback_color - filtered_fallback_min - filtered_fallback_max
             ) / (filtered_fallback_weight - 2.0);
+            filtered_fallback_color = clamp(
+                mix(raw_fallback_mean, trimmed_fallback_mean, 1.25),
+                vec3f(0.0),
+                vec3f(1.0),
+            );
         } else {
-            filtered_fallback_color /= filtered_fallback_weight;
+            filtered_fallback_color = raw_fallback_mean;
         }
     }
     let fallback_luminance = dot(
