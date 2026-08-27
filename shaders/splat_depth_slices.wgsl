@@ -68,7 +68,15 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         let normal_gate = exp(-32.0 * (1.0 - normal_similarity));
         let fragment_luminance = clamp(dot(in.color, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
         let luminance_gate = exp(-2.0 * abs(fragment_luminance - (feature.w - 1.0)));
-        let disagreement = behind * (1.0 - depth_gate * normal_gate * luminance_gate);
+        let appearance_agreement = normal_gate * luminance_gate;
+        let front_band = 1.0 - smoothstep(
+            0.0,
+            0.04 * radius_z,
+            abs(depth_delta),
+        );
+        let front_anchor = front_band * appearance_agreement;
+        optical_quantile *= 1.0 - front_anchor;
+        let disagreement = behind * (1.0 - depth_gate * appearance_agreement);
         optical_quantile = mix(optical_quantile, 1.0, disagreement);
     }
     // A tent basis over four ordered quantile representatives avoids hard layer
