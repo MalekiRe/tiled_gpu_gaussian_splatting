@@ -195,14 +195,18 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
                 }
             }
             reconstruction_color /= reconstruction_weight;
-            let missing_luminance = max(front_luminance - fallback_luminance, 0.0);
+            let reconstruction_luminance = dot(
+                reconstruction_color,
+                vec3<f32>(0.2126, 0.7152, 0.0722),
+            );
+            let missing_luminance = max(front_luminance - reconstruction_luminance, 0.0);
             let additive_front_color = clamp(
                 reconstruction_color + vec3f(missing_luminance),
                 vec3f(0.0),
                 vec3f(1.0),
             );
             let multiplicative_scale = clamp(
-                front_luminance / max(fallback_luminance, 1.0 / 63.0),
+                front_luminance / max(reconstruction_luminance, 1.0 / 63.0),
                 1.0,
                 4.0,
             );
