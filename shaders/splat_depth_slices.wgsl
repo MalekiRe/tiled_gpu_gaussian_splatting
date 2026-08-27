@@ -162,7 +162,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             let luminance_scale = clamp(
                 front_luminance / max(fallback_luminance, 1.0 / 63.0),
                 1.0,
-                3.0,
+                4.0,
             );
             front_color = clamp(fallback_color * luminance_scale, vec3f(0.0), vec3f(1.0));
             front_normal = normalize(mix(primary_normal, fallback_normal, consensus_blend));
