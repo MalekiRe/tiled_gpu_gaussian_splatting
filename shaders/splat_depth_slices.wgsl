@@ -124,7 +124,14 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         );
         let local_thickness = max(0.03 * radius_z, 2.0 * combined_depth_sigma);
         let local_softness = max(0.08 * radius_z, 4.0 * combined_depth_sigma);
-        let behind = smoothstep(0.0, local_thickness, max(depth_delta, 0.0));
+        let view_normal = (camera.view * vec4<f32>(in.normal, 0.0)).xyz;
+        let back_facing = smoothstep(0.0, 0.0625, -view_normal.z);
+        let oriented_thickness = mix(
+            local_thickness,
+            max(0.015 * radius_z, combined_depth_sigma),
+            0.25 * back_facing,
+        );
+        let behind = smoothstep(0.0, oriented_thickness, max(depth_delta, 0.0));
         let depth_gate = exp(-pow(max(depth_delta, 0.0) / local_softness, 2.0));
         let normal_similarity = clamp(dot(in.normal, front_normal), -1.0, 1.0);
         let normal_gate = exp(-32.0 * (1.0 - normal_similarity));
@@ -149,8 +156,6 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             * observation_confidence;
         let front_anchor = raw_front_anchor * raw_front_anchor * raw_front_anchor;
         optical_quantile *= 1.0 - front_anchor;
-        let view_normal = (camera.view * vec4<f32>(in.normal, 0.0)).xyz;
-        let back_facing = smoothstep(0.0, 0.0625, -view_normal.z);
         let surface_disagreement = max(
             1.0 - depth_gate * appearance_agreement,
             back_facing,
