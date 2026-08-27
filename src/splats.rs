@@ -295,14 +295,36 @@ fn nearest_direction_weights_dynamic(
         }
     }
 
-    let mut weights = [0.0; 3];
-    for (weight, &(dot, _)) in weights.iter_mut().zip(&nearest) {
-        *weight = 1.0 / (1e-3 + 1.0 - dot.clamp(-1.0, 1.0));
+    // Project the three sample directions onto the live view's tangent plane and
+    // find barycentric weights for its origin. This exactly reproduces angularly
+    // linear data whenever the samples surround the live direction.
+    let projected = nearest.map(|(_, index)| {
+        let direction = glam::Vec3::from_array(directions[index]);
+        direction - forward * direction.dot(forward)
+    });
+    let v0 = projected[1] - projected[0];
+    let v1 = projected[2] - projected[0];
+    let v2 = -projected[0];
+    let d00 = v0.dot(v0);
+    let d01 = v0.dot(v1);
+    let d11 = v1.dot(v1);
+    let d20 = v2.dot(v0);
+    let d21 = v2.dot(v1);
+    let denominator = d00 * d11 - d01 * d01;
+    if denominator.abs() > 1e-12 {
+        let w1 = (d11 * d20 - d01 * d21) / denominator;
+        let w2 = (d00 * d21 - d01 * d20) / denominator;
+        let mut weights = [(1.0 - w1 - w2).max(0.0), w1.max(0.0), w2.max(0.0)];
+        let sum: f32 = weights.iter().sum();
+        for weight in &mut weights {
+            *weight /= sum;
+        }
+        return (nearest, weights);
     }
+
+    let mut weights = nearest.map(|(dot, _)| 1.0 / (1e-3 + 1.0 - dot.clamp(-1.0, 1.0)));
     let sum: f32 = weights.iter().sum();
-    for weight in &mut weights {
-        *weight /= sum;
-    }
+    for weight in &mut weights { *weight /= sum; }
     (nearest, weights)
 }
 

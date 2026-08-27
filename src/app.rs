@@ -339,7 +339,11 @@ fn run_benchmark(
             samples.full_frame.push(full_frame);
             samples.sparkle.push(sparkle);
         }
-        println!("  view {:>3}/{views} complete", view_index + 1);
+        let completed = view_index + 1;
+        let progress_interval = (views / 32).max(1);
+        if completed == views || completed % progress_interval == 0 {
+            println!("  view {completed:>4}/{views} complete");
+        }
     }
 
     println!("\nLinear premultiplied-RGBA MSE (lower is better)");
