@@ -683,7 +683,7 @@ impl HighQualitySpatialDirectionalPrior {
                             histograms[Self::index(view, x, y, depth_bin)] += cell_weight;
                             // A soft front bias produces a stable color hint without
                             // requiring a color payload for every depth bin.
-                            let front_weight = cell_weight * (-8.0 * relative_depth).exp();
+                            let front_weight = cell_weight * (-12.0 * relative_depth).exp();
                             let color = glam::Vec3::from_slice(&splat.color[..3]);
                             let chroma = glam::Vec2::new(
                                 color.x - color.z,
