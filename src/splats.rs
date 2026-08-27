@@ -599,16 +599,38 @@ impl HighQualitySpatialDirectionalPrior {
             HQ_SPATIAL_PRIOR_WIDTH * HQ_SPATIAL_PRIOR_HEIGHT * DIRECTIONAL_DEPTH_BINS
         ];
         let depth_range = (far - near).max(1e-6);
+        let baked_distance = self.radius / (45.0_f32.to_radians() * 0.5).sin();
+        let projection_scale = distance / baked_distance;
 
         for y in 0..HQ_SPATIAL_PRIOR_HEIGHT {
             for x in 0..HQ_SPATIAL_PRIOR_WIDTH {
                 let out_base = (y * HQ_SPATIAL_PRIOR_WIDTH + x) * DIRECTIONAL_DEPTH_BINS;
+                let source_x = (((x as f32 + 0.5) - HQ_SPATIAL_PRIOR_WIDTH as f32 * 0.5)
+                    * projection_scale
+                    + HQ_SPATIAL_PRIOR_WIDTH as f32 * 0.5
+                    - 0.5)
+                    .clamp(0.0, (HQ_SPATIAL_PRIOR_WIDTH - 1) as f32);
+                let source_y = (((y as f32 + 0.5) - HQ_SPATIAL_PRIOR_HEIGHT as f32 * 0.5)
+                    * projection_scale
+                    + HQ_SPATIAL_PRIOR_HEIGHT as f32 * 0.5
+                    - 0.5)
+                    .clamp(0.0, (HQ_SPATIAL_PRIOR_HEIGHT - 1) as f32);
+                let x0 = source_x.floor() as usize;
+                let y0 = source_y.floor() as usize;
+                let x1 = (x0 + 1).min(HQ_SPATIAL_PRIOR_WIDTH - 1);
+                let y1 = (y0 + 1).min(HQ_SPATIAL_PRIOR_HEIGHT - 1);
+                let fx = source_x - x0 as f32;
+                let fy = source_y - y0 as f32;
                 for source_bin in 0..SPATIAL_PRIOR_DEPTH_BINS {
                     let mut value = 0.0;
                     for (neighbor, weight) in nearest.iter().zip(weights) {
-                        value += weight
-                            * self.histograms
-                                [Self::index(neighbor.1, x, y, source_bin)];
+                        let top = self.histograms[Self::index(neighbor.1, x0, y0, source_bin)]
+                            * (1.0 - fx)
+                            + self.histograms[Self::index(neighbor.1, x1, y0, source_bin)] * fx;
+                        let bottom = self.histograms[Self::index(neighbor.1, x0, y1, source_bin)]
+                            * (1.0 - fx)
+                            + self.histograms[Self::index(neighbor.1, x1, y1, source_bin)] * fx;
+                        value += weight * (top * (1.0 - fy) + bottom * fy);
                     }
                     let scene_t = (source_bin as f32 + 0.5) / SPATIAL_PRIOR_DEPTH_BINS as f32;
                     let offset = (scene_t * 2.0 - 1.0) * self.radius;
