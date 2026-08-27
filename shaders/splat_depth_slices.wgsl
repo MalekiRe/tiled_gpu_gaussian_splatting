@@ -149,7 +149,13 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             * observation_confidence;
         let front_anchor = raw_front_anchor * raw_front_anchor * raw_front_anchor;
         optical_quantile *= 1.0 - front_anchor;
-        let disagreement = behind * (1.0 - depth_gate * appearance_agreement)
+        let view_normal = (camera.view * vec4<f32>(in.normal, 0.0)).xyz;
+        let back_facing = smoothstep(0.0, 0.5, -view_normal.z);
+        let surface_disagreement = max(
+            1.0 - depth_gate * appearance_agreement,
+            back_facing,
+        );
+        let disagreement = behind * surface_disagreement
             * observation_confidence;
         optical_quantile = mix(optical_quantile, 1.0, disagreement);
     }
