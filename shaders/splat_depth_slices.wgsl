@@ -131,7 +131,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         // boundary. Preserve a wider band for faint/noisy support, where an
         // overconfident split turns directly into pinholes.
         let orientation_strength = back_facing
-            * mix(0.10, 0.50, core_confidence * observation_confidence);
+            * mix(0.05, 0.50, core_confidence * observation_confidence);
         let oriented_thickness = mix(
             local_thickness,
             max(0.015 * radius_z, combined_depth_sigma),
