@@ -331,7 +331,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     let spatial_stability = 1.0 - smoothstep(0.10, 0.60, assignment_gradient);
     let depth_certainty = 1.0 - smoothstep(0.04, 0.20, cdf_sample.g);
     let hard_depth_certainty = depth_certainty
-        * (1.0 - 0.20 * optical_density_signal);
+        * (1.0 - 0.40 * optical_density_signal);
     let hard_assignment = smoothstep(0.10, 0.24, alpha)
         * spatial_stability
         * hard_depth_certainty;
