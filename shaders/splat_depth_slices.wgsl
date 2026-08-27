@@ -252,6 +252,31 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             );
             front_normal = normalize(mix(primary_normal, fallback_normal, consensus_blend));
         }
+        if (!primary_valid && fallback_valid) {
+            var fringe_color = fallback_color;
+            var fringe_weight = 1.0;
+            let fallback_size = vec2<i32>(textureDimensions(front_feature_fallback));
+            let neighbor_offsets = array<vec2<i32>, 8>(
+                vec2<i32>(-1, 0), vec2<i32>(1, 0),
+                vec2<i32>(0, -1), vec2<i32>(0, 1),
+                vec2<i32>(-1, -1), vec2<i32>(1, -1),
+                vec2<i32>(-1, 1), vec2<i32>(1, 1),
+            );
+            for (var neighbor_index = 0u; neighbor_index < 8u; neighbor_index++) {
+                let neighbor_pixel = clamp(
+                    pixel + neighbor_offsets[neighbor_index],
+                    vec2<i32>(0),
+                    fallback_size - vec2<i32>(1),
+                );
+                let neighbor = textureLoad(front_feature_fallback, neighbor_pixel, 0);
+                if (neighbor.w >= 1.0) {
+                    fringe_color += decode_rgb3(neighbor.w);
+                    fringe_weight += 1.0;
+                }
+            }
+            front_color = fringe_color / fringe_weight;
+            front_luminance = dot(front_color, vec3f(0.2126, 0.7152, 0.0722));
+        }
         let depth_delta = normalized_z - front_depth;
         let combined_depth_sigma = sqrt(
             in.depth_sigma * in.depth_sigma + front_depth_sigma * front_depth_sigma,
