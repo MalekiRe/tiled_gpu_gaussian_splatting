@@ -121,6 +121,10 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     let fallback_valid = fallback_feature.w >= 1.0;
     let primary_payload = decode_primary_payload(primary_feature.w);
     let fallback_color = decode_rgb3(fallback_feature.w);
+    let center_fallback_luminance = dot(
+        fallback_color,
+        vec3<f32>(0.2126, 0.7152, 0.0722),
+    );
     var filtered_fallback_color = fallback_color;
     var filtered_fallback_weight = 1.0;
     if (fallback_valid) {
@@ -186,8 +190,13 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             // Covariance-derived normal signs are only a heuristic, so even
             // perfectly matching stochastic observations must not dominate.
             let observation_normal_agreement = min(raw_observation_normal_agreement, 0.64);
+            let agreement_luminance = mix(
+                center_fallback_luminance,
+                fallback_luminance,
+                0.75,
+            );
             let observation_luminance_agreement = exp(
-                -2.0 * abs(primary_payload.x - fallback_luminance),
+                -2.0 * abs(primary_payload.x - agreement_luminance),
             );
             coherent_layer_evidence = (1.0 - depth_agreement)
                 * raw_observation_normal_agreement
