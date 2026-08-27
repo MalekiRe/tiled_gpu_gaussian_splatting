@@ -7,7 +7,7 @@ impl DepthSlicedPipeline {
     pub fn new(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> Self {
         let composite_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("depth slices composite bgl"),
-            entries: &std::array::from_fn::<_, 4, _>(|binding| wgpu::BindGroupLayoutEntry {
+            entries: &std::array::from_fn::<_, 5, _>(|binding| wgpu::BindGroupLayoutEntry {
                 binding: binding as u32,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {

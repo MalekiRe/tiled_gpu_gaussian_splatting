@@ -296,7 +296,12 @@ impl Renderer {
             surface_config.height,
         );
         let depth_slice_composite_bind_group =
-            create_depth_slice_bind_group(&device, &depth_sliced.composite_bgl, &depth_slice_views);
+            create_depth_slice_bind_group(
+                &device,
+                &depth_sliced.composite_bgl,
+                &depth_slice_views,
+                &front_color_filtered_view,
+            );
 
         let wboit_composite_bind_groups = std::array::from_fn(|i| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -800,6 +805,7 @@ impl Renderer {
             &self.device,
             &self.depth_sliced.composite_bgl,
             &self.depth_slice_views,
+            &self.front_color_filtered_view,
         );
 
         // Recreate double-buffered bind groups
@@ -1894,14 +1900,33 @@ fn create_depth_slice_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     views: &[wgpu::TextureView; 4],
+    front_color_filtered_view: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("depth slices composite bind group"),
         layout,
-        entries: &std::array::from_fn::<_, 4, _>(|binding| wgpu::BindGroupEntry {
-            binding: binding as u32,
-            resource: wgpu::BindingResource::TextureView(&views[binding]),
-        }),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&views[0]),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&views[1]),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&views[2]),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(&views[3]),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(front_color_filtered_view),
+            },
+        ],
     })
 }
 
