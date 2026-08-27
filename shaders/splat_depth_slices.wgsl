@@ -62,9 +62,25 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     let pixel = vec2<i32>(in.clip_position.xy);
     let primary_feature = textureLoad(front_feature, pixel, 0);
     let fallback_feature = textureLoad(front_feature_fallback, pixel, 0);
-    let feature = select(fallback_feature, primary_feature, primary_feature.w >= 1.0);
+    let primary_valid = primary_feature.w >= 1.0;
+    let fallback_valid = fallback_feature.w >= 1.0;
+    let feature = select(fallback_feature, primary_feature, primary_valid);
     if (feature.w >= 1.0) {
         let radius_z = max(params.scene_radius / camera.depth_range, 1e-5);
+        var observation_confidence = select(0.5, 1.0, primary_valid);
+        if (primary_valid && fallback_valid) {
+            let observation_depth_delta = abs(primary_feature.z - fallback_feature.z);
+            let depth_agreement = exp(-pow(observation_depth_delta / (0.12 * radius_z), 2.0));
+            let observation_normal_agreement = clamp(
+                0.5 + 0.5 * dot(
+                    decode_octahedral(primary_feature.xy),
+                    decode_octahedral(fallback_feature.xy),
+                ),
+                0.0,
+                1.0,
+            );
+            observation_confidence = 0.75 + 0.25 * depth_agreement * observation_normal_agreement;
+        }
         let depth_delta = normalized_z - feature.z;
         let behind = smoothstep(0.0, 0.03 * radius_z, max(depth_delta, 0.0));
         let depth_gate = exp(-pow(max(depth_delta, 0.0) / (0.08 * radius_z), 2.0));
@@ -81,10 +97,12 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         // Anchor the stable Gaussian body, but let its faint support retain the
         // continuous tent basis so slice changes cannot turn into sparkling edges.
         let core_confidence = smoothstep(0.04, 0.18, alpha);
-        let raw_front_anchor = front_band * appearance_agreement * core_confidence;
+        let raw_front_anchor = front_band * appearance_agreement * core_confidence
+            * observation_confidence;
         let front_anchor = raw_front_anchor * raw_front_anchor * raw_front_anchor;
         optical_quantile *= 1.0 - front_anchor;
-        let disagreement = behind * (1.0 - depth_gate * appearance_agreement);
+        let disagreement = behind * (1.0 - depth_gate * appearance_agreement)
+            * observation_confidence;
         optical_quantile = mix(optical_quantile, 1.0, disagreement);
     }
     // A tent basis over four ordered quantile representatives avoids hard layer
