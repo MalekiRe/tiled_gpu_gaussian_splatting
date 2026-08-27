@@ -193,7 +193,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             let agreement_luminance = mix(
                 center_fallback_luminance,
                 fallback_luminance,
-                0.75,
+                0.50,
             );
             let observation_luminance_agreement = exp(
                 -2.0 * abs(primary_payload.x - agreement_luminance),
