@@ -137,7 +137,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         let orientation_strength = back_facing * max(
             0.0,
             mix(0.05, 0.50, core_confidence * observation_confidence)
-                - core_confidence * coherent_layer_evidence,
+                - 2.0 * core_confidence * coherent_layer_evidence,
         );
         let oriented_thickness = mix(
             local_thickness,
