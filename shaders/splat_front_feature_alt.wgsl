@@ -57,6 +57,7 @@ fn fs_main(in: SplatVsOut) -> @location(0) vec4<f32> {
         0.0,
         1.0,
     );
-    let luminance = clamp(dot(in.color, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
-    return vec4<f32>(encode_octahedral(in.normal), normalized_z, 1.0 + luminance);
+    let rgb3 = round(clamp(in.color, vec3<f32>(0.0), vec3<f32>(1.0)) * 7.0);
+    let packed_rgb = rgb3.r + 8.0 * rgb3.g + 64.0 * rgb3.b;
+    return vec4<f32>(encode_octahedral(in.normal), normalized_z, 1.0 + packed_rgb / 512.0);
 }

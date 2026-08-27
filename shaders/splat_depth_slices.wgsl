@@ -30,6 +30,11 @@ fn decode_octahedral(encoded: vec2<f32>) -> vec3<f32> {
     return normalize(normal);
 }
 
+fn decode_rgb3(encoded: f32) -> vec3<f32> {
+    let code = round(max(encoded - 1.0, 0.0) * 512.0);
+    return vec3<f32>(code % 8.0, floor(code / 8.0) % 8.0, floor(code / 64.0)) / 7.0;
+}
+
 @vertex
 fn vs_main(
     @builtin(vertex_index) vertex_index: u32,
@@ -65,12 +70,14 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     let fallback_feature = textureLoad(front_feature_fallback, pixel, 0);
     let primary_valid = primary_feature.w >= 1.0;
     let fallback_valid = fallback_feature.w >= 1.0;
+    let fallback_color = decode_rgb3(fallback_feature.w);
+    let fallback_luminance = dot(fallback_color, vec3<f32>(0.2126, 0.7152, 0.0722));
     let feature = select(fallback_feature, primary_feature, primary_valid);
     if (feature.w >= 1.0) {
         let radius_z = max(params.scene_radius / camera.depth_range, 1e-5);
         var observation_confidence = select(0.5, 1.0, primary_valid);
         var front_depth = feature.z;
-        var front_luminance = feature.w - 1.0;
+        var front_luminance = select(fallback_luminance, primary_feature.w - 1.0, primary_valid);
         var front_normal = decode_octahedral(feature.xy);
         if (primary_valid && fallback_valid) {
             let observation_depth_delta = abs(primary_feature.z - fallback_feature.z);
@@ -83,7 +90,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
                 1.0,
             );
             let observation_luminance_agreement = exp(
-                -2.0 * abs(primary_feature.w - fallback_feature.w),
+                -2.0 * abs((primary_feature.w - 1.0) - fallback_luminance),
             );
             let observation_agreement = depth_agreement
                 * observation_normal_agreement
@@ -93,7 +100,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             front_depth = mix(primary_feature.z, fallback_feature.z, consensus_blend);
             front_luminance = mix(
                 primary_feature.w - 1.0,
-                fallback_feature.w - 1.0,
+                fallback_luminance,
                 consensus_blend,
             );
             front_normal = normalize(mix(primary_normal, fallback_normal, consensus_blend));
@@ -105,7 +112,13 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         let normal_gate = exp(-32.0 * (1.0 - normal_similarity));
         let fragment_luminance = clamp(dot(in.color, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
         let luminance_gate = exp(-2.0 * abs(fragment_luminance - front_luminance));
-        let appearance_agreement = normal_gate * luminance_gate;
+        let raw_color_gate = exp(-4.0 * dot(in.color - fallback_color, in.color - fallback_color));
+        let color_gate = select(
+            1.0,
+            mix(1.0, raw_color_gate, 0.5 * observation_confidence),
+            fallback_valid,
+        );
+        let appearance_agreement = normal_gate * luminance_gate * color_gate;
         let front_band = 1.0 - smoothstep(
             0.0,
             0.04 * radius_z,
