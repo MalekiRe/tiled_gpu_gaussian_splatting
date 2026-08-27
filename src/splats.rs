@@ -74,6 +74,8 @@ pub struct HighQualitySpatialDirectionalPrior {
     histograms: Vec<u8>,
     /// Co/Cg chroma averaged toward the camera for each [view][tile].
     front_chroma: Vec<[u8; 2]>,
+    /// Pre-normalization optical-depth mass for each [view][tile].
+    optical_totals: Vec<f32>,
     radius: f32,
 }
 
@@ -549,6 +551,11 @@ impl HighQualitySpatialDirectionalPrior {
         )
     }
 
+    fn optical_total_value(&self, view: usize, x: usize, y: usize) -> f32 {
+        self.optical_totals
+            [(view * HQ_SPATIAL_PRIOR_HEIGHT + y) * HQ_SPATIAL_PRIOR_WIDTH + x]
+    }
+
     fn bake(splats: &[SplatGpu], center: glam::Vec3, radius: f32) -> Self {
         let directions = fibonacci_direction_vec(HQ_DIRECTIONAL_VIEW_COUNT);
         let mut histograms = vec![
@@ -563,6 +570,10 @@ impl HighQualitySpatialDirectionalPrior {
             HQ_DIRECTIONAL_VIEW_COUNT
                 * HQ_SPATIAL_PRIOR_WIDTH
                 * HQ_SPATIAL_PRIOR_HEIGHT
+        ];
+        let mut optical_totals = vec![
+            0.0;
+            directions.len() * HQ_SPATIAL_PRIOR_WIDTH * HQ_SPATIAL_PRIOR_HEIGHT
         ];
         let tan_half_fov_y = (45.0_f32.to_radians() * 0.5).tan();
         let tan_half_fov_x = tan_half_fov_y * (16.0 / 9.0);
@@ -706,6 +717,9 @@ impl HighQualitySpatialDirectionalPrior {
                     let base = Self::index(view, x, y, 0);
                     let values = &mut histograms[base..base + SPATIAL_PRIOR_DEPTH_BINS];
                     let sum: f32 = values.iter().sum();
+                    optical_totals[
+                        (view * HQ_SPATIAL_PRIOR_HEIGHT + y) * HQ_SPATIAL_PRIOR_WIDTH + x
+                    ] = sum;
                     if sum > 0.0 {
                         for value in values {
                             *value /= sum;
@@ -744,6 +758,7 @@ impl HighQualitySpatialDirectionalPrior {
             directions,
             histograms,
             front_chroma,
+            optical_totals,
             radius,
         }
     }
@@ -758,9 +773,10 @@ impl HighQualitySpatialDirectionalPrior {
         let (nearest, weights) = nearest_direction_weights_dynamic(&self.directions, forward);
         let histogram_len =
             HQ_SPATIAL_PRIOR_WIDTH * HQ_SPATIAL_PRIOR_HEIGHT * DIRECTIONAL_DEPTH_BINS;
+        let tile_count = HQ_SPATIAL_PRIOR_WIDTH * HQ_SPATIAL_PRIOR_HEIGHT;
         let mut output = vec![
             0.0;
-            histogram_len + HQ_SPATIAL_PRIOR_WIDTH * HQ_SPATIAL_PRIOR_HEIGHT * 2
+            histogram_len + tile_count * 3
         ];
         let depth_range = (far - near).max(1e-6);
         let baked_distance = self.radius / (45.0_f32.to_radians() * 0.5).sin();
@@ -820,6 +836,10 @@ impl HighQualitySpatialDirectionalPrior {
         // Chroma is a screen-tile moment rather than a depth volume. Reproject
         // it at the scene centre, then use the same directional interpolation.
         let projection_scale = distance / baked_distance.max(1e-5);
+        let zoom_area_scale = (baked_distance / distance.max(1e-5)).powi(2);
+        let cell_ndc_area = 4.0
+            / (HQ_SPATIAL_PRIOR_WIDTH * HQ_SPATIAL_PRIOR_HEIGHT) as f32;
+        let optical_mass_to_mean_tau = std::f32::consts::TAU / cell_ndc_area;
         for y in 0..HQ_SPATIAL_PRIOR_HEIGHT {
             for x in 0..HQ_SPATIAL_PRIOR_WIDTH {
                 let source_x = (((x as f32 + 0.5)
@@ -841,6 +861,7 @@ impl HighQualitySpatialDirectionalPrior {
                 let fx = source_x - x0 as f32;
                 let fy = source_y - y0 as f32;
                 let mut chroma = glam::Vec2::ZERO;
+                let mut optical_total = 0.0;
                 for (neighbor, weight) in nearest.iter().zip(weights) {
                     let top = self.chroma_value(neighbor.1, x0, y0).lerp(
                         self.chroma_value(neighbor.1, x1, y0),
@@ -851,10 +872,19 @@ impl HighQualitySpatialDirectionalPrior {
                         fx,
                     );
                     chroma += weight * top.lerp(bottom, fy);
+                    let total_top = self.optical_total_value(neighbor.1, x0, y0)
+                        * (1.0 - fx)
+                        + self.optical_total_value(neighbor.1, x1, y0) * fx;
+                    let total_bottom = self.optical_total_value(neighbor.1, x0, y1)
+                        * (1.0 - fx)
+                        + self.optical_total_value(neighbor.1, x1, y1) * fx;
+                    optical_total += weight * (total_top * (1.0 - fy) + total_bottom * fy);
                 }
                 let chroma_base = histogram_len + (y * HQ_SPATIAL_PRIOR_WIDTH + x) * 2;
                 output[chroma_base] = chroma.x;
                 output[chroma_base + 1] = chroma.y;
+                output[histogram_len + tile_count * 2 + y * HQ_SPATIAL_PRIOR_WIDTH + x] =
+                    optical_total * optical_mass_to_mean_tau * zoom_area_scale;
             }
         }
         output

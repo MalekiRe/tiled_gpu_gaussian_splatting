@@ -101,6 +101,16 @@ impl HistogramWboitPipeline {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -186,6 +196,16 @@ impl HistogramWboitPipeline {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba16Float,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -245,7 +265,11 @@ impl HistogramWboitPipeline {
             });
         let high_quality_spatial_cdf_source = spatial_cdf_build_wgsl
             .replace("const PRIOR_WIDTH: u32 = 8u;", "const PRIOR_WIDTH: u32 = 20u;")
-            .replace("const PRIOR_HEIGHT: u32 = 8u;", "const PRIOR_HEIGHT: u32 = 12u;");
+            .replace("const PRIOR_HEIGHT: u32 = 8u;", "const PRIOR_HEIGHT: u32 = 12u;")
+            .replace(
+                "const HAS_OPTICAL_TOTAL: u32 = 0u;",
+                "const HAS_OPTICAL_TOTAL: u32 = 1u;",
+            );
         let high_quality_spatial_cdf_build_shader =
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("high quality spatial cdf build shader"),

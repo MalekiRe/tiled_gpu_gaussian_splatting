@@ -8,10 +8,12 @@ struct HistoParams {
 const PRIOR_WIDTH: u32 = 8u;
 const PRIOR_HEIGHT: u32 = 8u;
 const DEPTH_BINS: u32 = 64u;
+const HAS_OPTICAL_TOTAL: u32 = 0u;
 
 @group(0) @binding(1) var cdf_out: texture_storage_3d<rgba16float, write>;
 @group(0) @binding(2) var<uniform> histo_params: HistoParams;
 @group(0) @binding(3) var<storage, read> spatial_prior: array<f32>;
+@group(0) @binding(5) var optical_total_out: texture_storage_2d<rgba16float, write>;
 
 var<workgroup> buf_a: array<f32, 64>;
 var<workgroup> buf_b: array<f32, 64>;
@@ -24,6 +26,15 @@ fn prior_chroma(x: u32, y: u32) -> vec2<f32> {
     let histogram_len = PRIOR_WIDTH * PRIOR_HEIGHT * DEPTH_BINS;
     let base = histogram_len + (y * PRIOR_WIDTH + x) * 2u;
     return vec2f(spatial_prior[base], spatial_prior[base + 1u]);
+}
+
+fn prior_optical_total(x: u32, y: u32) -> f32 {
+    if (HAS_OPTICAL_TOTAL != 0u) {
+        let histogram_len = PRIOR_WIDTH * PRIOR_HEIGHT * DEPTH_BINS;
+        let chroma_len = PRIOR_WIDTH * PRIOR_HEIGHT * 2u;
+        return spatial_prior[histogram_len + chroma_len + y * PRIOR_WIDTH + x];
+    }
+    return 0.0;
 }
 
 @compute @workgroup_size(64, 1, 1)
@@ -59,6 +70,17 @@ fn main(
     let chroma_top = mix(prior_chroma(x0, y0), prior_chroma(x1, y0), fx);
     let chroma_bottom = mix(prior_chroma(x0, y1), prior_chroma(x1, y1), fx);
     let chroma = mix(chroma_top, chroma_bottom, fy);
+    let optical_total_top = mix(
+        prior_optical_total(x0, y0),
+        prior_optical_total(x1, y0),
+        fx,
+    );
+    let optical_total_bottom = mix(
+        prior_optical_total(x0, y1),
+        prior_optical_total(x1, y1),
+        fx,
+    );
+    let optical_total = mix(optical_total_top, optical_total_bottom, fy);
     buf_a[bin] = bin_value;
     workgroupBarrier();
 
@@ -79,6 +101,13 @@ fn main(
     var cdf = f32(bin) / f32(DEPTH_BINS);
     if (total > 0.0) {
         cdf = (buf_a[bin] - bin_value) / total;
+    }
+    if (bin == 0u) {
+        textureStore(
+            optical_total_out,
+            vec2i(i32(tile_x), i32(tile_y)),
+            vec4f(optical_total, 0.0, 0.0, 0.0),
+        );
     }
     textureStore(
         cdf_out,

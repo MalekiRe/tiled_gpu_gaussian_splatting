@@ -21,6 +21,7 @@ struct HistoParams {
 @group(2) @binding(5) var front_feature: texture_2d<f32>;
 @group(2) @binding(6) var front_feature_fallback: texture_2d<f32>;
 @group(2) @binding(7) var front_color_filtered: texture_2d<f32>;
+@group(2) @binding(8) var tile_optical_depth: texture_2d<f32>;
 
 fn decode_octahedral(encoded: vec2<f32>) -> vec3<f32> {
     let projected = encoded * 2.0 - 1.0;
@@ -306,12 +307,20 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     // transitions without adding another pass or attachment.
     // Front-loaded representatives: an error near the eye modulates every layer
     // behind it, so spend more of the fixed four-layer budget there.
+    let mean_tile_tau = textureSampleLevel(
+        tile_optical_depth,
+        cdf_sampler,
+        vec2f(u, v),
+        0.0,
+    ).r;
+    let optical_density_signal = 1.0 - exp(-0.25 * mean_tile_tau);
+    let adaptive_quantile_exponent = mix(0.80, 0.68, optical_density_signal);
     let dense_depth_support = smoothstep(0.04, 0.20, cdf_sample.g);
     let core_warp_end = mix(0.48, 0.72, dense_depth_support);
     let core_warp = smoothstep(0.04, core_warp_end, alpha);
     let warped_quantile = mix(
         optical_quantile,
-        pow(optical_quantile, 0.75),
+        pow(optical_quantile, adaptive_quantile_exponent),
         core_warp,
     );
     let slice_position = clamp(warped_quantile * 3.0, 0.0, 3.0);

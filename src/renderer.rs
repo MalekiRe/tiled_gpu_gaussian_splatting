@@ -120,6 +120,7 @@ pub struct Renderer {
     // Histogram WBOIT resources (tiled)
     histogram_buffer: wgpu::Buffer,
     cdf_texture_view: wgpu::TextureView,
+    tile_optical_depth_view: wgpu::TextureView,
     cdf_sampler: wgpu::Sampler,
     histo_params_buffer: wgpu::Buffer,
     cdf_build_bind_group: wgpu::BindGroup,
@@ -336,7 +337,7 @@ impl Renderer {
             label: Some("directional histogram prior buffer"),
             size: (HQ_SPATIAL_PRIOR_WIDTH
                 * HQ_SPATIAL_PRIOR_HEIGHT
-                * (DIRECTIONAL_DEPTH_BINS + 2)
+                * (DIRECTIONAL_DEPTH_BINS + 3)
                 * std::mem::size_of::<f32>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -367,6 +368,8 @@ impl Renderer {
         let (cdf_texture, cdf_texture_view) =
             create_cdf_texture(&device, tiles_x, tiles_y, NUM_DEPTH_BINS);
         let _ = cdf_texture; // view keeps texture alive via Arc internally
+        let tile_optical_depth_view =
+            create_tile_optical_depth_texture(&device, tiles_x, tiles_y);
 
         let cdf_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("cdf sampler"),
@@ -425,6 +428,10 @@ impl Renderer {
                         binding: 7,
                         resource: wgpu::BindingResource::TextureView(&front_color_filtered_view),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: wgpu::BindingResource::TextureView(&tile_optical_depth_view),
+                    },
                 ],
             })
         });
@@ -471,6 +478,10 @@ impl Renderer {
                     binding: 4,
                     resource: directional_prior_params_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(&tile_optical_depth_view),
+                },
             ],
         });
 
@@ -506,6 +517,7 @@ impl Renderer {
             histo_composite_tex_bind_groups,
             histogram_buffer,
             cdf_texture_view,
+            tile_optical_depth_view,
             cdf_sampler,
             histo_params_buffer,
             cdf_build_bind_group,
@@ -830,6 +842,8 @@ impl Renderer {
             create_cdf_texture(&self.device, tiles_x, tiles_y, NUM_DEPTH_BINS);
         let _ = cdf_texture;
         self.cdf_texture_view = cdf_texture_view;
+        self.tile_optical_depth_view =
+            create_tile_optical_depth_texture(&self.device, tiles_x, tiles_y);
 
         self.queue.write_buffer(
             &self.histo_params_buffer,
@@ -878,6 +892,12 @@ impl Renderer {
                             &self.front_color_filtered_view,
                         ),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.tile_optical_depth_view,
+                        ),
+                    },
                 ],
             })
         });
@@ -923,6 +943,12 @@ impl Renderer {
                     wgpu::BindGroupEntry {
                         binding: 4,
                         resource: self.directional_prior_params_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.tile_optical_depth_view,
+                        ),
                     },
                 ],
             });
@@ -1901,4 +1927,28 @@ fn create_cdf_texture(
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
     (texture, view)
+}
+
+fn create_tile_optical_depth_texture(
+    device: &wgpu::Device,
+    tiles_x: u32,
+    tiles_y: u32,
+) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("tile optical depth texture"),
+            size: wgpu::Extent3d {
+                width: tiles_x,
+                height: tiles_y,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default())
 }

@@ -18,6 +18,7 @@ const OD_SCALE: f32 = 4096.0;
 @group(0) @binding(2) var<uniform> histo_params: HistoParams;
 @group(0) @binding(3) var<storage, read> directional_prior: array<f32>;
 @group(0) @binding(4) var<uniform> prior_params: DirectionalPriorParams;
+@group(0) @binding(5) var optical_total_out: texture_storage_2d<rgba16float, write>;
 
 // Shared memory for Hillis-Steele prefix sum (64 bins)
 var<workgroup> buf_a: array<f32, 64>;
@@ -59,6 +60,13 @@ fn main(
     workgroupBarrier();
 
     let live_total = buf_a[0];
+    if (bin == 0u) {
+        textureStore(
+            optical_total_out,
+            vec2i(i32(tile_x), i32(tile_y)),
+            vec4f(live_total, 0.0, 0.0, 0.0),
+        );
+    }
     var mix_factor = 0.0;
     if (prior_params.enabled != 0u) {
         mix_factor = clamp(prior_params.mix_factor, 0.0, 1.0);
