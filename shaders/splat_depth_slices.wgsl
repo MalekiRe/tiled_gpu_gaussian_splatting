@@ -134,11 +134,12 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         // Solid, corroborated samples can tolerate a much narrower back-layer
         // boundary. Preserve a wider band for faint/noisy support, where an
         // overconfident split turns directly into pinholes.
+        let peak_support = smoothstep(0.04, 0.20, cdf_sample.g);
         let orientation_strength = back_facing * max(
             0.0,
             mix(0.05, 0.50, core_confidence * observation_confidence)
                 - 2.0 * core_confidence * coherent_layer_evidence,
-        );
+        ) * mix(1.0, 1.25, core_confidence * peak_support);
         let oriented_thickness = mix(
             local_thickness,
             max(0.015 * radius_z, combined_depth_sigma),
