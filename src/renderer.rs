@@ -105,6 +105,8 @@ pub struct Renderer {
     front_feature_depth_view: wgpu::TextureView,
     front_feature_alt_view: wgpu::TextureView,
     front_feature_alt_depth_view: wgpu::TextureView,
+    front_color_filtered_view: wgpu::TextureView,
+    front_color_filter_bind_group: wgpu::BindGroup,
     depth_slice_views: [wgpu::TextureView; 4],
     depth_slice_composite_bind_group: wgpu::BindGroup,
     frame_index: usize,
@@ -276,6 +278,17 @@ impl Renderer {
                 surface_config.width,
                 surface_config.height,
             );
+        let front_color_filtered_view = create_front_color_filtered_texture(
+            &device,
+            surface_config.width,
+            surface_config.height,
+        );
+        let front_color_filter_bind_group = create_front_color_filter_bind_group(
+            &device,
+            &splat_pipelines.front_color_filter_bgl,
+            &front_feature_alt_view,
+            &front_color_filtered_view,
+        );
         let depth_slice_views = create_depth_slice_textures(
             &device,
             surface_config.width,
@@ -408,6 +421,10 @@ impl Renderer {
                         binding: 6,
                         resource: wgpu::BindingResource::TextureView(&front_feature_alt_view),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: wgpu::BindingResource::TextureView(&front_color_filtered_view),
+                    },
                 ],
             })
         });
@@ -479,6 +496,8 @@ impl Renderer {
             front_feature_depth_view,
             front_feature_alt_view,
             front_feature_alt_depth_view,
+            front_color_filtered_view,
+            front_color_filter_bind_group,
             depth_slice_views,
             depth_slice_composite_bind_group,
             frame_index: 0,
@@ -756,6 +775,14 @@ impl Renderer {
             create_front_feature_textures(&self.device, width, height);
         self.front_feature_alt_view = front_feature_alt_view;
         self.front_feature_alt_depth_view = front_feature_alt_depth_view;
+        self.front_color_filtered_view =
+            create_front_color_filtered_texture(&self.device, width, height);
+        self.front_color_filter_bind_group = create_front_color_filter_bind_group(
+            &self.device,
+            &self.splat_pipelines.front_color_filter_bgl,
+            &self.front_feature_alt_view,
+            &self.front_color_filtered_view,
+        );
         self.depth_slice_views = create_depth_slice_textures(&self.device, width, height);
         self.depth_slice_composite_bind_group = create_depth_slice_bind_group(
             &self.device,
@@ -843,6 +870,12 @@ impl Renderer {
                         binding: 6,
                         resource: wgpu::BindingResource::TextureView(
                             &self.front_feature_alt_view,
+                        ),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.front_color_filtered_view,
                         ),
                     },
                 ],
@@ -1402,6 +1435,20 @@ impl Renderer {
         }
 
         {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("front color robust filter"),
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.splat_pipelines.front_color_filter_pipeline);
+            pass.set_bind_group(0, &self.front_color_filter_bind_group, &[]);
+            pass.dispatch_workgroups(
+                self.surface_config.width.div_ceil(8),
+                self.surface_config.height.div_ceil(8),
+                1,
+            );
+        }
+
+        {
             let color_attachments: [Option<wgpu::RenderPassColorAttachment<'_>>; 4] =
                 std::array::from_fn(|slice| {
                 Some(wgpu::RenderPassColorAttachment {
@@ -1660,6 +1707,51 @@ fn create_depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu:
         view_formats: &[],
     });
     texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+fn create_front_color_filtered_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("filtered splat front color"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+fn create_front_color_filter_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    fallback: &wgpu::TextureView,
+    filtered: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("front color filter bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(fallback),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(filtered),
+            },
+        ],
+    })
 }
 
 fn create_front_feature_textures(

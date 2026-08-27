@@ -13,6 +13,8 @@ pub struct SplatPipelines {
     pub baked_histo_pipeline: wgpu::RenderPipeline,
     pub front_feature_pipeline: wgpu::RenderPipeline,
     pub front_feature_alt_pipeline: wgpu::RenderPipeline,
+    pub front_color_filter_pipeline: wgpu::ComputePipeline,
+    pub front_color_filter_bgl: wgpu::BindGroupLayout,
     pub front_weighted_histo_pipeline: wgpu::RenderPipeline,
     pub double_front_histo_pipeline: wgpu::RenderPipeline,
     pub splat_bgl: wgpu::BindGroupLayout,
@@ -383,6 +385,55 @@ impl SplatPipelines {
                 cache: None,
             });
 
+        let front_color_filter_bgl =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("front color filter bgl"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba16Float,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let front_color_filter_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("front color filter layout"),
+                bind_group_layouts: &[&front_color_filter_bgl],
+                immediate_size: 0,
+            });
+        let front_color_filter_shader =
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("front color filter shader"),
+                source: wgpu::ShaderSource::Wgsl(
+                    include_str!("../../shaders/front_color_filter.wgsl").into(),
+                ),
+            });
+        let front_color_filter_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("front color filter pipeline"),
+                layout: Some(&front_color_filter_layout),
+                module: &front_color_filter_shader,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+
         let front_weighted_histo_shader = shader(
             device,
             "splat front weighted histo shader",
@@ -447,6 +498,8 @@ impl SplatPipelines {
             baked_histo_pipeline,
             front_feature_pipeline,
             front_feature_alt_pipeline,
+            front_color_filter_pipeline,
+            front_color_filter_bgl,
             front_weighted_histo_pipeline,
             double_front_histo_pipeline,
             splat_bgl,

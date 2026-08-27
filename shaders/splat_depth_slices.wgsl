@@ -20,6 +20,7 @@ struct HistoParams {
 @group(2) @binding(3) var<uniform> histo_params: HistoParams;
 @group(2) @binding(5) var front_feature: texture_2d<f32>;
 @group(2) @binding(6) var front_feature_fallback: texture_2d<f32>;
+@group(2) @binding(7) var front_color_filtered: texture_2d<f32>;
 
 fn decode_octahedral(encoded: vec2<f32>) -> vec3<f32> {
     let projected = encoded * 2.0 - 1.0;
@@ -121,51 +122,13 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     let fallback_valid = fallback_feature.w >= 1.0;
     let primary_payload = decode_primary_payload(primary_feature.w);
     let fallback_color = decode_rgb3(fallback_feature.w);
+    let filtered_fallback = textureLoad(front_color_filtered, pixel, 0);
     let center_fallback_luminance = dot(
         fallback_color,
         vec3<f32>(0.2126, 0.7152, 0.0722),
     );
-    var filtered_fallback_color = fallback_color;
-    var filtered_fallback_min = fallback_color;
-    var filtered_fallback_max = fallback_color;
-    var filtered_fallback_weight = 1.0;
-    if (fallback_valid) {
-        let fallback_size = vec2<i32>(textureDimensions(front_feature_fallback));
-        let neighbor_offsets = array<vec2<i32>, 8>(
-            vec2<i32>(-1, 0), vec2<i32>(1, 0),
-            vec2<i32>(0, -1), vec2<i32>(0, 1),
-            vec2<i32>(-1, -1), vec2<i32>(1, -1),
-            vec2<i32>(-1, 1), vec2<i32>(1, 1),
-        );
-        for (var neighbor_index = 0u; neighbor_index < 8u; neighbor_index++) {
-            let neighbor_pixel = clamp(
-                pixel + neighbor_offsets[neighbor_index],
-                vec2<i32>(0),
-                fallback_size - vec2<i32>(1),
-            );
-            let neighbor = textureLoad(front_feature_fallback, neighbor_pixel, 0);
-            if (neighbor.w >= 1.0) {
-                let neighbor_color = decode_rgb3(neighbor.w);
-                filtered_fallback_color += neighbor_color;
-                filtered_fallback_min = min(filtered_fallback_min, neighbor_color);
-                filtered_fallback_max = max(filtered_fallback_max, neighbor_color);
-                filtered_fallback_weight += 1.0;
-            }
-        }
-        let raw_fallback_mean = filtered_fallback_color / filtered_fallback_weight;
-        if (filtered_fallback_weight > 2.0) {
-            let trimmed_fallback_mean = (
-                filtered_fallback_color - filtered_fallback_min - filtered_fallback_max
-            ) / (filtered_fallback_weight - 2.0);
-            filtered_fallback_color = clamp(
-                mix(raw_fallback_mean, trimmed_fallback_mean, 1.50),
-                vec3f(0.0),
-                vec3f(1.0),
-            );
-        } else {
-            filtered_fallback_color = raw_fallback_mean;
-        }
-    }
+    let filtered_fallback_color = filtered_fallback.rgb;
+    let filtered_fallback_weight = filtered_fallback.a;
     let fallback_luminance = dot(
         filtered_fallback_color,
         vec3<f32>(0.2126, 0.7152, 0.0722),
@@ -210,7 +173,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             let agreement_luminance = mix(
                 center_fallback_luminance,
                 fallback_luminance,
-                0.50 * smoothstep(1.0, 9.0, filtered_fallback_weight),
+                0.51 * smoothstep(1.0, 9.0, filtered_fallback_weight),
             );
             let observation_luminance_agreement = exp(
                 -2.0 * abs(primary_payload.x - agreement_luminance),
