@@ -81,7 +81,8 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         // Anchor the stable Gaussian body, but let its faint support retain the
         // continuous tent basis so slice changes cannot turn into sparkling edges.
         let core_confidence = smoothstep(0.04, 0.18, alpha);
-        let front_anchor = front_band * appearance_agreement * core_confidence;
+        let raw_front_anchor = front_band * appearance_agreement * core_confidence;
+        let front_anchor = raw_front_anchor * raw_front_anchor;
         optical_quantile *= 1.0 - front_anchor;
         let disagreement = behind * (1.0 - depth_gate * appearance_agreement);
         optical_quantile = mix(optical_quantile, 1.0, disagreement);
