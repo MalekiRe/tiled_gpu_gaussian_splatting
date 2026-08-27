@@ -126,10 +126,16 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         let local_softness = max(0.08 * radius_z, 4.0 * combined_depth_sigma);
         let view_normal = (camera.view * vec4<f32>(in.normal, 0.0)).xyz;
         let back_facing = smoothstep(0.0, 0.0625, -view_normal.z);
+        let core_confidence = smoothstep(0.04, 0.18, alpha);
+        // Solid, corroborated samples can tolerate a much narrower back-layer
+        // boundary. Preserve a wider band for faint/noisy support, where an
+        // overconfident split turns directly into pinholes.
+        let orientation_strength = back_facing
+            * mix(0.10, 0.50, core_confidence * observation_confidence);
         let oriented_thickness = mix(
             local_thickness,
             max(0.015 * radius_z, combined_depth_sigma),
-            0.25 * back_facing,
+            orientation_strength,
         );
         let behind = smoothstep(0.0, oriented_thickness, max(depth_delta, 0.0));
         let depth_gate = exp(-pow(max(depth_delta, 0.0) / local_softness, 2.0));
@@ -151,7 +157,6 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         );
         // Anchor the stable Gaussian body, but let its faint support retain the
         // continuous tent basis so slice changes cannot turn into sparkling edges.
-        let core_confidence = smoothstep(0.04, 0.18, alpha);
         let raw_front_anchor = front_band * appearance_agreement * core_confidence
             * observation_confidence;
         let front_anchor = raw_front_anchor * raw_front_anchor * raw_front_anchor;
