@@ -48,6 +48,31 @@ fn decode_positive_log4(value: u8) -> f32 {
     VALUES[usize::from(value)]
 }
 
+fn encode_optical_depth8(value: f32) -> u8 {
+    const MIN_EXPONENT: f32 = -10.0;
+    const MAX_EXPONENT: f32 = 5.0;
+    if value < 2.0_f32.powf(MIN_EXPONENT - 1.0) {
+        return 0;
+    }
+    let level = ((value.log2() - MIN_EXPONENT) * (254.0 / (MAX_EXPONENT - MIN_EXPONENT)))
+        .round()
+        .clamp(0.0, 254.0);
+    1 + level as u8
+}
+
+fn decode_optical_depth8(value: u8) -> f32 {
+    const MIN_EXPONENT: f32 = -10.0;
+    const MAX_EXPONENT: f32 = 5.0;
+    if value == 0 {
+        0.0
+    } else {
+        2.0_f32.powf(
+            MIN_EXPONENT
+                + f32::from(value - 1) * ((MAX_EXPONENT - MIN_EXPONENT) / 254.0),
+        )
+    }
+}
+
 /// A compact view-dependent optical-depth prior. Each row is baked from one evenly
 /// distributed camera direction and uses scene-relative depth in [-radius, radius].
 #[derive(Clone)]
@@ -75,7 +100,7 @@ pub struct HighQualitySpatialDirectionalPrior {
     /// Co/Cg chroma averaged toward the camera for each [view][tile].
     front_chroma: Vec<[u8; 2]>,
     /// Pre-normalization optical-depth mass for each [view][tile].
-    optical_totals: Vec<f32>,
+    optical_totals: Vec<u8>,
     radius: f32,
 }
 
@@ -552,8 +577,10 @@ impl HighQualitySpatialDirectionalPrior {
     }
 
     fn optical_total_value(&self, view: usize, x: usize, y: usize) -> f32 {
-        self.optical_totals
-            [(view * HQ_SPATIAL_PRIOR_HEIGHT + y) * HQ_SPATIAL_PRIOR_WIDTH + x]
+        decode_optical_depth8(
+            self.optical_totals
+                [(view * HQ_SPATIAL_PRIOR_HEIGHT + y) * HQ_SPATIAL_PRIOR_WIDTH + x],
+        )
     }
 
     fn bake(splats: &[SplatGpu], center: glam::Vec3, radius: f32) -> Self {
@@ -753,6 +780,13 @@ impl HighQualitySpatialDirectionalPrior {
                 ]
             })
             .collect();
+        let cell_ndc_area = 4.0
+            / (HQ_SPATIAL_PRIOR_WIDTH * HQ_SPATIAL_PRIOR_HEIGHT) as f32;
+        let optical_mass_to_mean_tau = std::f32::consts::TAU / cell_ndc_area;
+        let optical_totals = optical_totals
+            .into_iter()
+            .map(|mass| encode_optical_depth8(mass * optical_mass_to_mean_tau))
+            .collect();
 
         Self {
             directions,
@@ -837,9 +871,6 @@ impl HighQualitySpatialDirectionalPrior {
         // it at the scene centre, then use the same directional interpolation.
         let projection_scale = distance / baked_distance.max(1e-5);
         let zoom_area_scale = (baked_distance / distance.max(1e-5)).powi(2);
-        let cell_ndc_area = 4.0
-            / (HQ_SPATIAL_PRIOR_WIDTH * HQ_SPATIAL_PRIOR_HEIGHT) as f32;
-        let optical_mass_to_mean_tau = std::f32::consts::TAU / cell_ndc_area;
         for y in 0..HQ_SPATIAL_PRIOR_HEIGHT {
             for x in 0..HQ_SPATIAL_PRIOR_WIDTH {
                 let source_x = (((x as f32 + 0.5)
@@ -884,7 +915,7 @@ impl HighQualitySpatialDirectionalPrior {
                 output[chroma_base] = chroma.x;
                 output[chroma_base + 1] = chroma.y;
                 output[histogram_len + tile_count * 2 + y * HQ_SPATIAL_PRIOR_WIDTH + x] =
-                    optical_total * optical_mass_to_mean_tau * zoom_area_scale;
+                    optical_total * zoom_area_scale;
             }
         }
         output
