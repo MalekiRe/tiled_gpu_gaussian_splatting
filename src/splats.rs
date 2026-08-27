@@ -11,37 +11,41 @@ pub const DIRECTIONAL_DEPTH_BINS: usize = 64;
 pub const SPATIAL_PRIOR_WIDTH: usize = 8;
 pub const SPATIAL_PRIOR_HEIGHT: usize = 8;
 pub const SPATIAL_PRIOR_DEPTH_BINS: usize = 32;
-pub const HQ_DIRECTIONAL_VIEW_COUNT: usize = 1024;
+pub const HQ_DIRECTIONAL_VIEW_COUNT: usize = 2048;
 pub const HQ_SPATIAL_PRIOR_WIDTH: usize = 20;
 pub const HQ_SPATIAL_PRIOR_HEIGHT: usize = 12;
 
-fn encode_positive_e4m3(value: f32) -> u8 {
-    if value <= 0.0 {
+fn encode_positive_log4(value: f32) -> u8 {
+    const MIN_EXPONENT: f32 = -12.0;
+    if value < 2.0_f32.powf(MIN_EXPONENT - 1.0) {
         return 0;
     }
-    let mut exponent = value.log2().floor() as i32;
-    if exponent < -6 {
-        return (value * 512.0).round().clamp(0.0, 7.0) as u8;
-    }
-    let mut mantissa = ((value / 2.0_f32.powi(exponent) - 1.0) * 8.0).round() as i32;
-    if mantissa == 8 {
-        exponent += 1;
-        mantissa = 0;
-    }
-    if exponent > 7 {
-        return 0x77;
-    }
-    (((exponent + 7) << 3) | mantissa.clamp(0, 7)) as u8
+    let level = ((value.log2() - MIN_EXPONENT) * (14.0 / -MIN_EXPONENT))
+        .round()
+        .clamp(0.0, 14.0);
+    1 + level as u8
 }
 
-fn decode_positive_e4m3(value: u8) -> f32 {
-    let exponent = (value >> 3) & 0x0f;
-    let mantissa = value & 0x07;
-    if exponent == 0 {
-        f32::from(mantissa) / 512.0
-    } else {
-        (1.0 + f32::from(mantissa) / 8.0) * 2.0_f32.powi(i32::from(exponent) - 7)
-    }
+fn decode_positive_log4(value: u8) -> f32 {
+    const VALUES: [f32; 16] = [
+        0.0,
+        0.000244140625,
+        0.0004422478829,
+        0.0008011087461,
+        0.001451166298,
+        0.002628711314,
+        0.004761772087,
+        0.008625699326,
+        0.015625,
+        0.02830386451,
+        0.05127095975,
+        0.09287464307,
+        0.1682375241,
+        0.3047534136,
+        0.5520447568,
+        1.0,
+    ];
+    VALUES[usize::from(value)]
 }
 
 /// A compact view-dependent optical-depth prior. Each row is baked from one evenly
@@ -461,6 +465,16 @@ impl HighQualitySpatialDirectionalPrior {
             + depth
     }
 
+    fn histogram_value(&self, index: usize) -> f32 {
+        let packed = self.histograms[index / 2];
+        let code = if index & 1 == 0 {
+            packed & 0x0f
+        } else {
+            packed >> 4
+        };
+        decode_positive_log4(code)
+    }
+
     fn bake(splats: &[SplatGpu], center: glam::Vec3, radius: f32) -> Self {
         let directions = fibonacci_direction_vec(HQ_DIRECTIONAL_VIEW_COUNT);
         let mut histograms = vec![
@@ -608,9 +622,18 @@ impl HighQualitySpatialDirectionalPrior {
             }
         }
 
+        let histograms = histograms
+            .chunks(2)
+            .map(|values| {
+                let low = encode_positive_log4(values[0]);
+                let high = values.get(1).copied().map_or(0, encode_positive_log4);
+                low | (high << 4)
+            })
+            .collect();
+
         Self {
             directions,
-            histograms: histograms.into_iter().map(encode_positive_e4m3).collect(),
+            histograms,
             radius,
         }
     }
@@ -658,18 +681,18 @@ impl HighQualitySpatialDirectionalPrior {
                     let fy = source_y - y0 as f32;
                     let mut value = 0.0;
                     for (neighbor, weight) in nearest.iter().zip(weights) {
-                        let top = decode_positive_e4m3(
-                            self.histograms[Self::index(neighbor.1, x0, y0, source_bin)],
-                        ) * (1.0 - fx)
-                            + decode_positive_e4m3(
-                                self.histograms[Self::index(neighbor.1, x1, y0, source_bin)],
-                            ) * fx;
-                        let bottom = decode_positive_e4m3(
-                            self.histograms[Self::index(neighbor.1, x0, y1, source_bin)],
-                        ) * (1.0 - fx)
-                            + decode_positive_e4m3(
-                                self.histograms[Self::index(neighbor.1, x1, y1, source_bin)],
-                            ) * fx;
+                        let top = self.histogram_value(Self::index(
+                            neighbor.1, x0, y0, source_bin,
+                        )) * (1.0 - fx)
+                            + self.histogram_value(Self::index(
+                                neighbor.1, x1, y0, source_bin,
+                            )) * fx;
+                        let bottom = self.histogram_value(Self::index(
+                            neighbor.1, x0, y1, source_bin,
+                        )) * (1.0 - fx)
+                            + self.histogram_value(Self::index(
+                                neighbor.1, x1, y1, source_bin,
+                            )) * fx;
                         value += weight * (top * (1.0 - fy) + bottom * fy);
                     }
                     let camera_t = ((distance + offset - near) / depth_range).clamp(0.0, 1.0);
