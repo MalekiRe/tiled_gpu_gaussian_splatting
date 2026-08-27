@@ -687,6 +687,7 @@ impl HighQualitySpatialDirectionalPrior {
                 let inv_xy = -cxy / det;
                 let inv_yy = cxx / det;
                 let opacity = splat.pos_opacity[3].clamp(0.0, 1.0 - 1e-6);
+                let optical_depth = -(1.0 - opacity).ln();
                 let mut kernel_sum = 0.0;
                 for y in min_y..=max_y {
                     for x in min_x..=max_x {
@@ -695,7 +696,10 @@ impl HighQualitySpatialDirectionalPrior {
                         let power = -0.5
                             * (inv_xx * dx * dx + 2.0 * inv_xy * dx * dy + inv_yy * dy * dy);
                         if power >= -4.5 {
-                            kernel_sum += -(1.0 - opacity * power.exp()).ln();
+                            let gaussian = power.exp();
+                            let nonlinear = -(1.0 - opacity * gaussian).ln();
+                            kernel_sum += (1.25 * nonlinear - 0.25 * optical_depth * gaussian)
+                                .max(0.0);
                         }
                     }
                 }
@@ -703,7 +707,6 @@ impl HighQualitySpatialDirectionalPrior {
                     continue;
                 }
 
-                let optical_depth = -(1.0 - opacity).ln();
                 let total_weight = optical_depth * ndc_det.sqrt().max(1e-10);
                 let relative_depth =
                     (0.5 + relative.dot(forward) / (2.0 * radius)).clamp(0.0, 1.0);
@@ -717,8 +720,10 @@ impl HighQualitySpatialDirectionalPrior {
                         let power = -0.5
                             * (inv_xx * dx * dx + 2.0 * inv_xy * dx * dy + inv_yy * dy * dy);
                         if power >= -4.5 {
+                            let gaussian = power.exp();
+                            let nonlinear = -(1.0 - opacity * gaussian).ln();
                             let sample_optical_depth =
-                                -(1.0 - opacity * power.exp()).ln();
+                                (1.25 * nonlinear - 0.25 * optical_depth * gaussian).max(0.0);
                             let cell_weight = total_weight * sample_optical_depth / kernel_sum;
                             histograms[Self::index(view, x, y, depth_bin)] += cell_weight;
                             // A soft front bias produces a stable color hint without
