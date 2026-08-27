@@ -178,7 +178,14 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
                 vec3f(0.0),
                 vec3f(1.0),
             );
-            front_color = mix(multiplicative_front_color, additive_front_color, 0.85);
+            let packed_min = min(fallback_color.r, min(fallback_color.g, fallback_color.b));
+            let packed_max = max(fallback_color.r, max(fallback_color.g, fallback_color.b));
+            let additive_weight = mix(0.95, 0.65, packed_max - packed_min);
+            front_color = mix(
+                multiplicative_front_color,
+                additive_front_color,
+                additive_weight,
+            );
             front_normal = normalize(mix(primary_normal, fallback_normal, consensus_blend));
         }
         let depth_delta = normalized_z - front_depth;
