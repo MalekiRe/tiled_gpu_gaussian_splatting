@@ -1,7 +1,11 @@
 struct Camera {
     view_proj: mat4x4<f32>,
+    view: mat4x4<f32>,
     near: f32,
     far: f32,
+    focal: vec2<f32>,
+    viewport: vec2<f32>,
+    cam_pos: vec3<f32>,
 };
 
 struct Object {

@@ -2,8 +2,10 @@ use crate::camera::Camera;
 use crate::pipeline::alpha_blend::AlphaBlendPipeline;
 use crate::pipeline::histogram_wboit::HistogramWboitPipeline;
 use crate::pipeline::naive_wboit::NaiveWboitPipeline;
+use crate::pipeline::splat::SplatPipelines;
 use crate::scene::Scene;
-use crate::vertex::{CameraUniform, HistogramParams, ObjectUniform};
+use crate::splats::SplatScene;
+use crate::vertex::{CameraUniform, HistogramParams, ObjectUniform, SplatParams};
 
 const NUM_DEPTH_BINS: u32 = 64;
 const TILE_SIZE: u32 = 32;
@@ -23,6 +25,19 @@ impl RenderMode {
             RenderMode::HistogramWboit => "Histogram-Equalized WBOIT (tiled)",
         }
     }
+}
+
+/// GPU-resident splat scene plus the knobs the UI can turn.
+struct SplatGpuState {
+    /// Held only to keep the allocation alive alongside the bind group.
+    _sh_buffer: wgpu::Buffer,
+    order_buffer: wgpu::Buffer,
+    params_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    total: u32,
+    draw_count: u32,
+    sh_degree: u32,
+    splat_scale: f32,
 }
 
 struct GpuMesh {
@@ -51,6 +66,11 @@ pub struct Renderer {
     alpha_blend: AlphaBlendPipeline,
     naive_wboit: NaiveWboitPipeline,
     histogram_wboit: HistogramWboitPipeline,
+    splat_pipelines: SplatPipelines,
+
+    /// Present only when a PLY was supplied on the command line; when it is, splats
+    /// replace the quad/mesh scene entirely.
+    splats: Option<SplatGpuState>,
 
     // WBOIT textures (double-buffered revealage for transmittance feedback)
     accum_texture_view: wgpu::TextureView,
@@ -99,10 +119,16 @@ impl Renderer {
         }))
         .expect("Failed to find adapter");
 
+        // Big splat scenes need storage buffers well past the conservative defaults.
+        let adapter_limits = adapter.limits();
+        let mut limits = wgpu::Limits::default();
+        limits.max_storage_buffer_binding_size = adapter_limits.max_storage_buffer_binding_size;
+        limits.max_buffer_size = adapter_limits.max_buffer_size;
+
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("device"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
+            required_limits: limits,
             ..Default::default()
         }))
         .expect("Failed to create device");
@@ -192,6 +218,12 @@ impl Renderer {
             NaiveWboitPipeline::new(&device, surface_format, &camera_bgl, &object_bgl);
         let histogram_wboit =
             HistogramWboitPipeline::new(&device, surface_format, &camera_bgl, &object_bgl);
+        let splat_pipelines = SplatPipelines::new(
+            &device,
+            surface_format,
+            &camera_bgl,
+            &histogram_wboit.histo_accum_bgl,
+        );
 
         // Revealage flag buffer (u32: 0 = use exp approximation, 1 = use revealage)
         let revealage_flag_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -367,6 +399,8 @@ impl Renderer {
             alpha_blend,
             naive_wboit,
             histogram_wboit,
+            splat_pipelines,
+            splats: None,
             accum_texture_view,
             revealage_views,
             frame_index: 0,
@@ -384,6 +418,159 @@ impl Renderer {
             histo_params,
             camera_bgl,
             object_bgl,
+        }
+    }
+
+    /// Move a parsed splat scene onto the GPU. From here on, `render` draws splats.
+    pub fn upload_splats(&mut self, scene: &SplatScene) {
+        let total = scene.len() as u32;
+
+        let splat_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("splat buffer"),
+            size: (scene.gpu.len() * std::mem::size_of::<crate::splats::SplatGpu>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue
+            .write_buffer(&splat_buffer, 0, bytemuck::cast_slice(&scene.gpu));
+
+        // The binding must exist even for files without higher SH bands; a single dummy
+        // float keeps the layout uniform across both cases.
+        let sh_src: &[f32] = if scene.sh.is_empty() {
+            &[0.0]
+        } else {
+            &scene.sh
+        };
+        let sh_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("splat sh buffer"),
+            size: (sh_src.len() * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue
+            .write_buffer(&sh_buffer, 0, bytemuck::cast_slice(sh_src));
+
+        // Identity order until the sort thread reports in.
+        let identity: Vec<u32> = (0..total).collect();
+        let order_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("splat order buffer"),
+            size: (identity.len().max(1) * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue
+            .write_buffer(&order_buffer, 0, bytemuck::cast_slice(&identity));
+
+        let params_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("splat params buffer"),
+            size: std::mem::size_of::<SplatParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("splat bg"),
+            layout: &self.splat_pipelines.splat_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: splat_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: sh_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: order_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: params_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        self.splats = Some(SplatGpuState {
+            _sh_buffer: sh_buffer,
+            order_buffer,
+            params_buffer,
+            bind_group,
+            total,
+            draw_count: total,
+            sh_degree: scene.sh_degree,
+            splat_scale: 1.0,
+        });
+    }
+
+    pub fn has_splats(&self) -> bool {
+        self.splats.is_some()
+    }
+
+    /// How many splats are drawn this frame; also what the sorter is asked to order.
+    pub fn splat_draw_count(&self) -> usize {
+        self.splats.as_ref().map_or(0, |s| s.draw_count as usize)
+    }
+
+    pub fn upload_splat_order(&mut self, order: &[u32]) {
+        if let Some(sp) = &self.splats
+            && !order.is_empty()
+        {
+            self.queue
+                .write_buffer(&sp.order_buffer, 0, bytemuck::cast_slice(order));
+        }
+    }
+
+    /// Set the render cap as a fraction of the scene. Splats are stored most-important
+    /// first, so a prefix is the best subset of that size.
+    pub fn set_splat_fraction(&mut self, fraction: f32) -> Option<(u32, u32)> {
+        let sp = self.splats.as_mut()?;
+        sp.draw_count = ((sp.total as f32 * fraction) as u32).clamp(1, sp.total);
+        Some((sp.draw_count, sp.total))
+    }
+
+    pub fn adjust_splat_scale(&mut self, factor: f32) -> Option<f32> {
+        let sp = self.splats.as_mut()?;
+        sp.splat_scale = (sp.splat_scale * factor).clamp(0.05, 8.0);
+        Some(sp.splat_scale)
+    }
+
+    /// Issue the draws for whichever scene is loaded.
+    fn draw_scene(&self, pass: &mut wgpu::RenderPass<'_>, visible: &[usize], mode: RenderMode) {
+        pass.set_bind_group(0, &self.camera_bind_group, &[]);
+
+        if let Some(sp) = &self.splats {
+            let pipeline = match mode {
+                RenderMode::AlphaBlend => &self.splat_pipelines.alpha_pipeline,
+                RenderMode::NaiveWboit => &self.splat_pipelines.wboit_pipeline,
+                RenderMode::HistogramWboit => &self.splat_pipelines.histo_pipeline,
+            };
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(1, &sp.bind_group, &[]);
+            if mode == RenderMode::HistogramWboit {
+                pass.set_bind_group(2, &self.histo_accum_bind_groups[self.frame_index], &[]);
+            }
+            // One instanced quad per splat, expanded to the projected 3-sigma extent.
+            pass.draw(0..4, 0..sp.draw_count);
+            return;
+        }
+
+        let pipeline = match mode {
+            RenderMode::AlphaBlend => &self.alpha_blend.pipeline,
+            RenderMode::NaiveWboit => &self.naive_wboit.accum_pipeline,
+            RenderMode::HistogramWboit => &self.histogram_wboit.accum_pipeline,
+        };
+        pass.set_pipeline(pipeline);
+        if mode == RenderMode::HistogramWboit {
+            pass.set_bind_group(2, &self.histo_accum_bind_groups[self.frame_index], &[]);
+        }
+
+        for &idx in visible {
+            let mesh = &self.gpu_meshes[idx];
+            pass.set_bind_group(1, &mesh.object_bind_group, &[]);
+            pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+            pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            pass.draw_indexed(0..mesh.num_indices, 0, 0..1);
         }
     }
 
@@ -573,8 +760,22 @@ impl Renderer {
         self.queue
             .write_buffer(&self.revealage_flag_buffer, 0, bytemuck::bytes_of(&flag));
 
-        // Update object transforms
-        let mut visible: Vec<usize> = scene
+        if let Some(sp) = &self.splats {
+            let params = SplatParams {
+                count: sp.draw_count,
+                sh_degree: sp.sh_degree,
+                splat_scale: sp.splat_scale,
+                _padding: 0,
+            };
+            self.queue
+                .write_buffer(&sp.params_buffer, 0, bytemuck::bytes_of(&params));
+        }
+
+        // Update object transforms (mesh scene only)
+        let mut visible: Vec<usize> = if self.splats.is_some() {
+            Vec::new()
+        } else {
+            scene
             .objects
             .iter()
             .enumerate()
@@ -586,7 +787,8 @@ impl Renderer {
                 }
             })
             .map(|(i, _)| i)
-            .collect();
+            .collect()
+        };
 
         // Sort back-to-front for alpha blend mode
         if self.mode == RenderMode::AlphaBlend {
@@ -688,16 +890,7 @@ impl Renderer {
             ..Default::default()
         });
 
-        pass.set_pipeline(&self.alpha_blend.pipeline);
-        pass.set_bind_group(0, &self.camera_bind_group, &[]);
-
-        for &idx in visible {
-            let mesh = &self.gpu_meshes[idx];
-            pass.set_bind_group(1, &mesh.object_bind_group, &[]);
-            pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-            pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            pass.draw_indexed(0..mesh.num_indices, 0, 0..1);
-        }
+        self.draw_scene(&mut pass, visible, RenderMode::AlphaBlend);
     }
 
     fn render_naive_wboit(
@@ -748,16 +941,7 @@ impl Renderer {
                 ..Default::default()
             });
 
-            pass.set_pipeline(&self.naive_wboit.accum_pipeline);
-            pass.set_bind_group(0, &self.camera_bind_group, &[]);
-
-            for &idx in visible {
-                let mesh = &self.gpu_meshes[idx];
-                pass.set_bind_group(1, &mesh.object_bind_group, &[]);
-                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                pass.draw_indexed(0..mesh.num_indices, 0, 0..1);
-            }
+            self.draw_scene(&mut pass, visible, RenderMode::NaiveWboit);
         }
 
         // Pass 2: Composite
@@ -837,17 +1021,7 @@ impl Renderer {
                 ..Default::default()
             });
 
-            pass.set_pipeline(&self.histogram_wboit.accum_pipeline);
-            pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            pass.set_bind_group(2, &self.histo_accum_bind_groups[fi], &[]);
-
-            for &idx in visible {
-                let mesh = &self.gpu_meshes[idx];
-                pass.set_bind_group(1, &mesh.object_bind_group, &[]);
-                pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                pass.draw_indexed(0..mesh.num_indices, 0, 0..1);
-            }
+            self.draw_scene(&mut pass, visible, RenderMode::HistogramWboit);
         }
 
         // Pass 2: CDF build (compute) — one workgroup per tile

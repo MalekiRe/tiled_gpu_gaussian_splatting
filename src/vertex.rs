@@ -39,9 +39,30 @@ impl Vertex {
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
     pub view_proj: [[f32; 4]; 4],
+    /// View matrix on its own; the splat shaders need it to build the 3D->2D covariance
+    /// Jacobian, which is only defined in view space.
+    pub view: [[f32; 4]; 4],
     pub near: f32,
     pub far: f32,
-    pub _padding: [f32; 2],
+    /// Focal length in pixels, used to project the covariance to screen space.
+    pub focal: [f32; 2],
+    pub viewport: [f32; 2],
+    pub _padding0: [f32; 2],
+    /// World-space eye position, for view-dependent SH evaluation.
+    pub cam_pos: [f32; 3],
+    pub _padding1: f32,
+}
+
+/// Per-draw constants for the splat pipelines.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct SplatParams {
+    /// Number of splats actually drawn this frame (the render cap).
+    pub count: u32,
+    pub sh_degree: u32,
+    /// Global multiplier on splat size; 1.0 is the reconstruction's own scale.
+    pub splat_scale: f32,
+    pub _padding: u32,
 }
 
 #[repr(C)]

@@ -2,7 +2,9 @@
 
 ## Context
 
-Comparing three transparency rendering techniques side-by-side in a wgpu demo:
+Comparing three transparency rendering techniques side-by-side in a wgpu demo. The demo
+renders either a built-in quad/mesh scene or a **3D Gaussian Splatting** scene loaded from a
+PLY file (see *3DGS Mode* below), through the same three techniques:
 1. **Regular alpha blending** (baseline with ordering artifacts)
 2. **Naive WBOIT** (McGuire & Bavoil 2013 - static depth-based weight function)
 3. **Histogram-equalized WBOIT** (novel technique - uses a global depth histogram from the previous frame to build a CDF, which remaps depth values so WBOIT weights spread across the full f32 exponential range)
@@ -45,19 +47,23 @@ wboit-demo/
 ├── Cargo.toml                  # DONE - Project manifest with dependencies
 ├── Cargo.lock                  # DONE - Dependency lock file
 ├── CLAUDE.md                   # DONE - This file (project documentation)
+├── splats/                     # Test 3DGS PLY files (not tracked)
 ├── src/
-│   ├── main.rs                 # DONE - env_logger init, winit event loop, run_app
+│   ├── main.rs                 # DONE - env_logger init, optional PLY argument, winit event loop
 │   ├── app.rs                  # DONE - ApplicationHandler, keyboard/mouse/scroll input, redraw loop
 │   ├── renderer.rs             # DONE - GPU state, 3 render paths, resize, buffer management
 │   ├── camera.rs               # DONE - Orbit camera (spherical coords, mouse drag, scroll zoom)
 │   ├── scene.rs                # DONE - 6 quads + cube + sphere, auto-rotation, mesh toggle
 │   ├── mesh.rs                 # DONE - Procedural quad, cube, UV-sphere generators
-│   ├── vertex.rs               # DONE - Vertex, CameraUniform, ObjectUniform, HistogramParams
+│   ├── ply.rs                  # DONE - Binary PLY reader: INRIA + SuperSplat compressed
+│   ├── splats.rs               # DONE - Splat GPU packing, importance order, async depth sorter
+│   ├── vertex.rs               # DONE - Vertex, CameraUniform, ObjectUniform, HistogramParams, SplatParams
 │   └── pipeline/
 │       ├── mod.rs              # DONE - Re-exports
 │       ├── alpha_blend.rs      # DONE - Mode 1 pipeline (SrcAlpha/OneMinusSrcAlpha blend)
 │       ├── naive_wboit.rs      # DONE - Mode 2 accum pipeline (MRT) + composite pipeline
-│       └── histogram_wboit.rs  # DONE - Mode 3 accum + compute CDF + composite pipelines
+│       ├── histogram_wboit.rs  # DONE - Mode 3 accum + compute CDF + composite pipelines
+│       └── splat.rs            # DONE - 3DGS variants of all three accumulation pipelines
 └── shaders/
     ├── common.wgsl             # DONE - Camera/Object/VertexInput/VertexOutput structs, basic_vertex, simple_lighting
     ├── alpha_blend.wgsl        # DONE - vs_main/fs_main calling basic_vertex + simple_lighting
@@ -65,7 +71,11 @@ wboit-demo/
     ├── wboit_composite.wgsl    # DONE - Fullscreen triangle, textureLoad accum/revealage, alpha composite
     ├── histo_accum.wgsl        # DONE - atomicAdd to global histogram, CDF lookup, transmittance weight
     ├── histo_cdf_build.wgsl    # DONE - Compute shader: parallel prefix sum (Hillis-Steele), CDF normalize, histogram clear
-    └── histo_composite.wgsl    # DONE - WBOIT composite only (textures + revealage flag)
+    ├── histo_composite.wgsl    # DONE - WBOIT composite only (textures + revealage flag)
+    ├── splat_common.wgsl       # DONE - EWA projection, conic evaluation, SH degree-3 eval
+    ├── splat_alpha.wgsl        # DONE - Mode 1 fragment output for splats
+    ├── splat_wboit.wgsl        # DONE - Mode 2 fragment output for splats
+    └── splat_histo.wgsl        # DONE - Mode 3 fragment output for splats
 ```
 
 ## Data Types
@@ -209,6 +219,85 @@ Single pass:
 - **CDF buffer as non-atomic storage**: The CDF buffer is written by compute shader (pass 2) and read by fragment shader (pass 1 of next frame). Since these are in different passes of different frames, there's no synchronization issue. Use `var<storage, read_write>` with plain `f32` (not atomic).
 - **wgpu 28 API**: `PipelineLayoutDescriptor` uses `immediate_size` (not `push_constant_ranges`), `RenderPipelineDescriptor` uses `multiview_mask: None` (not `multiview: None`), `RenderPassColorAttachment` requires `depth_slice: None`.
 
+## 3DGS Mode
+> Implemented in `src/ply.rs`, `src/splats.rs`, `src/pipeline/splat.rs`, `shaders/splat_*.wgsl`
+
+```
+cargo run --release -- splats/rem_v3_clear.ply
+```
+
+With a PLY argument the splat scene replaces the quad/mesh scene entirely; all three
+transparency modes render it. Without an argument, nothing changes from the mesh demo.
+
+### PLY parsing
+> `src/ply.rs`
+
+Two on-disk variants are handled, both `binary_little_endian`:
+
+- **INRIA / original 3DGS**: `x,y,z`, `scale_0..2` (log space, exponentiated on load),
+  `rot_0..3` (`w,x,y,z`, normalized), `opacity` (logit, sigmoid applied on load),
+  `f_dc_0..2`, and optionally `f_rest_0..44` (channel-major: 15 coeffs of R, then G, then B).
+- **PlayCanvas / SuperSplat compressed**: an `element chunk` of per-256-splat bounds plus
+  four packed `u32` per vertex. Bit layouts match the PlayCanvas engine decoder:
+  - `packed_position` / `packed_scale`: 11/10/11 unorm, lerped between the chunk's
+    min/max bounds. Scale is still log space.
+  - `packed_rotation`: 2-10-10-10 "largest three" — the top 2 bits name the omitted
+    (largest) component, the rest are unorm mapped to `[-1/sqrt(2), 1/sqrt(2)]`.
+  - `packed_color`: 8888. RGB lerps between the chunk's colour bounds and is *already* the
+    evaluated DC band (not a raw `f_dc` coefficient); A is *already* sigmoid-applied opacity.
+  - An optional `element sh` carries quantized higher bands (`byte * 8/255 - 4`).
+
+The loader reports a clear error on a truncated file rather than producing garbage.
+
+### Coordinate frame
+3DGS reconstructions come out of COLMAP with +Y down and +Z into the screen. Positions and
+covariances are flipped by `diag(1, -1, -1)` at load time so the existing orbit camera's
++Y-up convention is correct. The shader undoes that flip on the view direction before
+evaluating SH, whose coefficients live in the original frame.
+
+### GPU layout
+- `SplatGpu`, 64 bytes: `vec4(pos.xyz, opacity)`, `vec4(cov_xx, cov_xy, cov_xz, _)`,
+  `vec4(cov_yy, cov_yz, cov_zz, _)`, `vec4(color.rgb, _)`. The 3D covariance is precomputed
+  on the CPU as `M M^T` where `M = flip * R(quat) * diag(scale)`.
+- SH buffer: `array<f32>`, 45 floats per splat, channel-major. A one-float dummy is bound
+  when the file has no higher bands, so the bind group layout is the same either way.
+- Order buffer: `array<u32>`, instance index -> splat index.
+
+Splats are stored **sorted by importance** (`opacity * cbrt(sx*sy*sz)`) so the render cap
+can simply draw a prefix and get the best subset of that size.
+
+### Rendering
+> `shaders/splat_common.wgsl`
+
+One instanced 4-vertex triangle strip per splat. The vertex shader does EWA splatting
+(Zwicker et al., as used by Kerbl et al. 2023):
+
+1. Transform the centre to view space; cull anything at or behind the near plane.
+2. Build the projection Jacobian `J` (with the sample point clamped to 1.3x the frustum
+   extent, so the affine approximation stays sane off-screen) and the view rotation `W`.
+3. `cov2d = J W cov3d W^T J^T`, plus a `+0.3` low-pass on the diagonal so every splat
+   covers about a pixel.
+4. Eigen-decompose the 2x2 result to get an oriented 3-sigma quad — far fewer wasted
+   fragments than an axis-aligned bound on elongated splats.
+5. Evaluate SH for the view direction and emit the conic (inverse `cov2d`).
+
+The fragment shader evaluates `alpha = opacity * exp(-0.5 * d^T conic d)`, discards below
+`1/255`, and hands the result to whichever mode's output is compiled in. All three splat
+pipelines disable depth testing (`depth_write: false`, `compare: Always`) but still declare
+a depth-stencil state, because they draw into the same render passes as the mesh path.
+
+### Sorting (mode 1 only)
+> `src/splats.rs`
+
+Modes 2 and 3 are order-independent by construction and draw in whatever order the buffer
+holds. Mode 1 needs a real back-to-front sort every frame, which is done as a **16-bit
+counting sort on a background thread**: view-space depth is quantized to `u16`, so the sort
+is a single O(n) counting pass with no comparisons. Measured at ~6 ms for 921k splats.
+
+The render thread never blocks on it — it keeps drawing the previous frame's order until a
+new one arrives, and only one request is ever in flight (the worker drops stale requests and
+sorts the newest camera). At orbit speeds the one-frame lag is not visible.
+
 ## Scene
 > Implemented in `src/scene.rs` (scene setup + auto-rotation) and `src/mesh.rs` (geometry generators)
 
@@ -225,6 +314,10 @@ Single pass:
 
 - `1` / `2` / `3`: Switch rendering mode (sets `renderer.mode`)
 - `M`: Toggle mesh visibility (toggles `scene.show_meshes`)
+- `A`: Toggle revealage vs. the `exp(-accum.a)` approximation
+- `C`: (3DGS only) Cycle the render cap: 100% / 50% / 25% / 10% of the scene
+- `[` / `]`: (3DGS only) Shrink / grow splats, for dialling overdraw up and down
+- `R`: Reset the camera to its framing of the loaded scene
 - `Escape`: Exit
 - Mouse drag (left button): Orbit camera (`camera.on_mouse_move`)
 - Scroll wheel: Zoom in/out (`camera.on_scroll`)
