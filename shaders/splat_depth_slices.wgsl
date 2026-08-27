@@ -125,19 +125,26 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     let optical_density_signal = 1.0 - exp(-0.25 * mean_tile_tau);
     let quantile_depths = tile_optical_data.gba;
     var knot_quantile = 0.0;
+    var knot_pdf = 0.0;
     if (normalized_z < quantile_depths.x) {
-        knot_quantile = 0.25 * normalized_z / max(quantile_depths.x, 1e-5);
+        let interval_width = max(quantile_depths.x, 1e-5);
+        knot_quantile = 0.25 * normalized_z / interval_width;
+        knot_pdf = 0.25 / (64.0 * interval_width);
     } else if (normalized_z < quantile_depths.y) {
-        knot_quantile = 0.25 + 0.25 * (normalized_z - quantile_depths.x)
-            / max(quantile_depths.y - quantile_depths.x, 1e-5);
+        let interval_width = max(quantile_depths.y - quantile_depths.x, 1e-5);
+        knot_quantile = 0.25 + 0.25 * (normalized_z - quantile_depths.x) / interval_width;
+        knot_pdf = 0.25 / (64.0 * interval_width);
     } else if (normalized_z < quantile_depths.z) {
-        knot_quantile = 0.50 + 0.25 * (normalized_z - quantile_depths.y)
-            / max(quantile_depths.z - quantile_depths.y, 1e-5);
+        let interval_width = max(quantile_depths.z - quantile_depths.y, 1e-5);
+        knot_quantile = 0.50 + 0.25 * (normalized_z - quantile_depths.y) / interval_width;
+        knot_pdf = 0.25 / (64.0 * interval_width);
     } else {
-        knot_quantile = 0.75 + 0.25 * (normalized_z - quantile_depths.z)
-            / max(1.0 - quantile_depths.z, 1e-5);
+        let interval_width = max(1.0 - quantile_depths.z, 1e-5);
+        knot_quantile = 0.75 + 0.25 * (normalized_z - quantile_depths.z) / interval_width;
+        knot_pdf = 0.25 / (64.0 * interval_width);
     }
-    let knot_confidence = (1.0 - smoothstep(0.02, 0.16, cdf_sample.g))
+    let stable_pdf = max(cdf_sample.g, clamp(knot_pdf, 0.0, 1.0));
+    let knot_confidence = (1.0 - smoothstep(0.02, 0.16, stable_pdf))
         * (1.0 - 0.5 * optical_density_signal);
     var optical_quantile = mix(
         cdf_sample.r,
