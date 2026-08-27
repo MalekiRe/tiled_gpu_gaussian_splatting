@@ -163,11 +163,22 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
                 consensus_blend,
             );
             let missing_luminance = max(front_luminance - fallback_luminance, 0.0);
-            front_color = clamp(
+            let additive_front_color = clamp(
                 fallback_color + vec3f(missing_luminance),
                 vec3f(0.0),
                 vec3f(1.0),
             );
+            let multiplicative_scale = clamp(
+                front_luminance / max(fallback_luminance, 1.0 / 63.0),
+                1.0,
+                4.0,
+            );
+            let multiplicative_front_color = clamp(
+                fallback_color * multiplicative_scale,
+                vec3f(0.0),
+                vec3f(1.0),
+            );
+            front_color = mix(multiplicative_front_color, additive_front_color, 0.75);
             front_normal = normalize(mix(primary_normal, fallback_normal, consensus_blend));
         }
         let depth_delta = normalized_z - front_depth;
@@ -199,7 +210,9 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         let normal_gate = exp(-32.0 * (1.0 - normal_similarity));
         let fragment_luminance = clamp(dot(in.color, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
         let luminance_gate = exp(-2.0 * abs(fragment_luminance - front_luminance));
-        let raw_color_gate = exp(-4.0 * dot(in.color - front_color, in.color - front_color));
+        let raw_color_gate = exp(
+            -4.0 * dot(in.color - front_color, in.color - front_color),
+        );
         let color_gate = select(
             1.0,
             mix(1.0, raw_color_gate, 0.5 * observation_confidence),
