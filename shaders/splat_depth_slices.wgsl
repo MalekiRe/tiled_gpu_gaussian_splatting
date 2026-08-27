@@ -106,8 +106,10 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             front_normal = normalize(mix(primary_normal, fallback_normal, consensus_blend));
         }
         let depth_delta = normalized_z - front_depth;
-        let behind = smoothstep(0.0, 0.03 * radius_z, max(depth_delta, 0.0));
-        let depth_gate = exp(-pow(max(depth_delta, 0.0) / (0.08 * radius_z), 2.0));
+        let local_thickness = max(0.03 * radius_z, 2.0 * in.depth_sigma);
+        let local_softness = max(0.08 * radius_z, 4.0 * in.depth_sigma);
+        let behind = smoothstep(0.0, local_thickness, max(depth_delta, 0.0));
+        let depth_gate = exp(-pow(max(depth_delta, 0.0) / local_softness, 2.0));
         let normal_similarity = clamp(dot(in.normal, front_normal), -1.0, 1.0);
         let normal_gate = exp(-32.0 * (1.0 - normal_similarity));
         let fragment_luminance = clamp(dot(in.color, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);

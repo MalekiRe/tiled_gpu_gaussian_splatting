@@ -49,6 +49,7 @@ struct SplatVsOut {
     @location(2) delta: vec2<f32>,
     @location(3) @interpolate(flat) normal: vec3<f32>,
     @location(4) @interpolate(flat) splat_index: u32,
+    @location(5) @interpolate(flat) depth_sigma: f32,
 };
 
 const SH_C1: f32 = 0.4886025119029199;
@@ -119,6 +120,7 @@ fn culled() -> SplatVsOut {
     out.delta = vec2<f32>(0.0);
     out.normal = vec3<f32>(0.0);
     out.splat_index = 0u;
+    out.depth_sigma = 0.0;
     return out;
 }
 
@@ -230,6 +232,7 @@ fn splat_vertex(vertex_index: u32, instance_index: u32) -> SplatVsOut {
     out.delta = offset_px;
     out.normal = normalize(vec3<f32>(s.cov_a.w, s.cov_b.w, s.color.w));
     out.splat_index = idx;
+    out.depth_sigma = sqrt(max(cov_view[2].z, 0.0)) / camera.depth_range;
     return out;
 }
 
