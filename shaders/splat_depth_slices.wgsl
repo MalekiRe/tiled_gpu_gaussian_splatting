@@ -140,7 +140,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             let observation_normal_agreement = clamp(
                 0.5 + 0.5 * dot(primary_normal, fallback_normal),
                 0.0,
-                0.76,
+                0.75,
             );
             let observation_luminance_agreement = exp(
                 -2.0 * abs(primary_payload.x - fallback_luminance),
