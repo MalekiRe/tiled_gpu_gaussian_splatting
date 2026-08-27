@@ -95,7 +95,9 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     // Keep the visually solid Gaussian core in one ordered representative. Only
     // the translucent fringe uses the tent basis. This avoids manufacturing two
     // semi-transparent copies of a surface-defining sample.
-    let hard_assignment = smoothstep(0.10, 0.24, alpha);
+    let assignment_gradient = fwidth(slice_position);
+    let spatial_stability = 1.0 - smoothstep(0.10, 0.60, assignment_gradient);
+    let hard_assignment = smoothstep(0.10, 0.24, alpha) * spatial_stability;
     let assigned_position = mix(slice_position, round(slice_position), hard_assignment);
     let lower_slice = u32(floor(assigned_position));
     let upper_slice = min(lower_slice + 1u, 3u);
