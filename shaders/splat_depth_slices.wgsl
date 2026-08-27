@@ -88,6 +88,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     if (feature.w >= 1.0) {
         let radius_z = max(params.scene_radius / camera.depth_range, 1e-5);
         var observation_confidence = select(0.5, 1.0, primary_valid);
+        var coherent_layer_evidence = 0.0;
         var front_depth = feature.z;
         var front_luminance = select(fallback_luminance, primary_payload.x, primary_valid);
         let front_depth_sigma = select(0.0, primary_payload.y * radius_z, primary_valid);
@@ -105,6 +106,9 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             let observation_luminance_agreement = exp(
                 -2.0 * abs(primary_payload.x - fallback_luminance),
             );
+            coherent_layer_evidence = (1.0 - depth_agreement)
+                * observation_normal_agreement
+                * observation_luminance_agreement;
             let observation_agreement = depth_agreement
                 * observation_normal_agreement
                 * observation_luminance_agreement;
@@ -130,8 +134,11 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         // Solid, corroborated samples can tolerate a much narrower back-layer
         // boundary. Preserve a wider band for faint/noisy support, where an
         // overconfident split turns directly into pinholes.
-        let orientation_strength = back_facing
-            * mix(0.05, 0.50, core_confidence * observation_confidence);
+        let orientation_strength = back_facing * max(
+            0.0,
+            mix(0.05, 0.50, core_confidence * observation_confidence)
+                - 0.25 * core_confidence * coherent_layer_evidence,
+        );
         let oriented_thickness = mix(
             local_thickness,
             max(0.015 * radius_z, combined_depth_sigma),
