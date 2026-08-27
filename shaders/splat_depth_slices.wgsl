@@ -162,9 +162,42 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
                 fallback_luminance,
                 consensus_blend,
             );
+            // The fallback's packed RGB is deliberately noisy.  Average only
+            // color from strongly coplanar neighbors; depth, normal, and all
+            // confidence decisions continue to use the unbiased center sample.
+            var reconstruction_color = 4.0 * fallback_color;
+            var reconstruction_weight = 4.0;
+            let fallback_size = vec2<i32>(textureDimensions(front_feature_fallback));
+            let neighbor_offsets = array<vec2<i32>, 4>(
+                vec2<i32>(-1, 0), vec2<i32>(1, 0),
+                vec2<i32>(0, -1), vec2<i32>(0, 1),
+            );
+            for (var neighbor_index = 0u; neighbor_index < 4u; neighbor_index++) {
+                let neighbor_pixel = clamp(
+                    pixel + neighbor_offsets[neighbor_index],
+                    vec2<i32>(0),
+                    fallback_size - vec2<i32>(1),
+                );
+                let neighbor = textureLoad(front_feature_fallback, neighbor_pixel, 0);
+                if (neighbor.w >= 1.0) {
+                    let neighbor_depth_gate = exp(-pow(
+                        abs(neighbor.z - fallback_feature.z) / (0.02 * radius_z),
+                        2.0,
+                    ));
+                    let neighbor_normal_gate = smoothstep(
+                        0.75,
+                        0.95,
+                        dot(fallback_normal, decode_octahedral(neighbor.xy)),
+                    );
+                    let neighbor_weight = neighbor_depth_gate * neighbor_normal_gate;
+                    reconstruction_color += neighbor_weight * decode_rgb3(neighbor.w);
+                    reconstruction_weight += neighbor_weight;
+                }
+            }
+            reconstruction_color /= reconstruction_weight;
             let missing_luminance = max(front_luminance - fallback_luminance, 0.0);
             let additive_front_color = clamp(
-                fallback_color + vec3f(missing_luminance),
+                reconstruction_color + vec3f(missing_luminance),
                 vec3f(0.0),
                 vec3f(1.0),
             );
@@ -174,12 +207,18 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
                 4.0,
             );
             let multiplicative_front_color = clamp(
-                fallback_color * multiplicative_scale,
+                reconstruction_color * multiplicative_scale,
                 vec3f(0.0),
                 vec3f(1.0),
             );
-            let packed_min = min(fallback_color.r, min(fallback_color.g, fallback_color.b));
-            let packed_max = max(fallback_color.r, max(fallback_color.g, fallback_color.b));
+            let packed_min = min(
+                reconstruction_color.r,
+                min(reconstruction_color.g, reconstruction_color.b),
+            );
+            let packed_max = max(
+                reconstruction_color.r,
+                max(reconstruction_color.g, reconstruction_color.b),
+            );
             let additive_weight = mix(0.95, 0.65, packed_max - packed_min);
             front_color = mix(
                 multiplicative_front_color,
