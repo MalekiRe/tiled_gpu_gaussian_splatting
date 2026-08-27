@@ -2,7 +2,6 @@
 //! the render cap, and a background depth sorter for the alpha-blended mode.
 
 use std::sync::Arc;
-use half::f16;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
 use crate::ply::SplatData;
@@ -12,9 +11,38 @@ pub const DIRECTIONAL_DEPTH_BINS: usize = 64;
 pub const SPATIAL_PRIOR_WIDTH: usize = 8;
 pub const SPATIAL_PRIOR_HEIGHT: usize = 8;
 pub const SPATIAL_PRIOR_DEPTH_BINS: usize = 32;
-pub const HQ_DIRECTIONAL_VIEW_COUNT: usize = 512;
+pub const HQ_DIRECTIONAL_VIEW_COUNT: usize = 1024;
 pub const HQ_SPATIAL_PRIOR_WIDTH: usize = 20;
 pub const HQ_SPATIAL_PRIOR_HEIGHT: usize = 12;
+
+fn encode_positive_e4m3(value: f32) -> u8 {
+    if value <= 0.0 {
+        return 0;
+    }
+    let mut exponent = value.log2().floor() as i32;
+    if exponent < -6 {
+        return (value * 512.0).round().clamp(0.0, 7.0) as u8;
+    }
+    let mut mantissa = ((value / 2.0_f32.powi(exponent) - 1.0) * 8.0).round() as i32;
+    if mantissa == 8 {
+        exponent += 1;
+        mantissa = 0;
+    }
+    if exponent > 7 {
+        return 0x77;
+    }
+    (((exponent + 7) << 3) | mantissa.clamp(0, 7)) as u8
+}
+
+fn decode_positive_e4m3(value: u8) -> f32 {
+    let exponent = (value >> 3) & 0x0f;
+    let mantissa = value & 0x07;
+    if exponent == 0 {
+        f32::from(mantissa) / 512.0
+    } else {
+        (1.0 + f32::from(mantissa) / 8.0) * 2.0_f32.powi(i32::from(exponent) - 7)
+    }
+}
 
 /// A compact view-dependent optical-depth prior. Each row is baked from one evenly
 /// distributed camera direction and uses scene-relative depth in [-radius, radius].
@@ -39,7 +67,7 @@ pub struct SpatialDirectionalHistogramPrior {
 #[derive(Clone)]
 pub struct HighQualitySpatialDirectionalPrior {
     directions: Vec<[f32; 3]>,
-    histograms: Vec<f16>,
+    histograms: Vec<u8>,
     radius: f32,
 }
 
@@ -582,7 +610,7 @@ impl HighQualitySpatialDirectionalPrior {
 
         Self {
             directions,
-            histograms: histograms.into_iter().map(f16::from_f32).collect(),
+            histograms: histograms.into_iter().map(encode_positive_e4m3).collect(),
             radius,
         }
     }
@@ -630,18 +658,18 @@ impl HighQualitySpatialDirectionalPrior {
                     let fy = source_y - y0 as f32;
                     let mut value = 0.0;
                     for (neighbor, weight) in nearest.iter().zip(weights) {
-                        let top = self.histograms[Self::index(neighbor.1, x0, y0, source_bin)]
-                            .to_f32()
-                            * (1.0 - fx)
-                            + self.histograms[Self::index(neighbor.1, x1, y0, source_bin)]
-                                .to_f32()
-                                * fx;
-                        let bottom = self.histograms[Self::index(neighbor.1, x0, y1, source_bin)]
-                            .to_f32()
-                            * (1.0 - fx)
-                            + self.histograms[Self::index(neighbor.1, x1, y1, source_bin)]
-                                .to_f32()
-                                * fx;
+                        let top = decode_positive_e4m3(
+                            self.histograms[Self::index(neighbor.1, x0, y0, source_bin)],
+                        ) * (1.0 - fx)
+                            + decode_positive_e4m3(
+                                self.histograms[Self::index(neighbor.1, x1, y0, source_bin)],
+                            ) * fx;
+                        let bottom = decode_positive_e4m3(
+                            self.histograms[Self::index(neighbor.1, x0, y1, source_bin)],
+                        ) * (1.0 - fx)
+                            + decode_positive_e4m3(
+                                self.histograms[Self::index(neighbor.1, x1, y1, source_bin)],
+                            ) * fx;
                         value += weight * (top * (1.0 - fy) + bottom * fy);
                     }
                     let camera_t = ((distance + offset - near) / depth_range).clamp(0.0, 1.0);
