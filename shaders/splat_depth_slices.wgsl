@@ -142,7 +142,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     var optical_quantile = mix(
         cdf_sample.r,
         clamp(knot_quantile, 0.0, 1.0),
-        0.20 * knot_confidence,
+        0.17 * knot_confidence,
     );
     let pixel = vec2<i32>(in.clip_position.xy);
     let primary_feature = textureLoad(front_feature, pixel, 0);
