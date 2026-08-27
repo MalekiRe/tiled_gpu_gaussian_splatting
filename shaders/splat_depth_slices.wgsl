@@ -178,7 +178,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
                 vec3f(0.0),
                 vec3f(1.0),
             );
-            front_color = mix(multiplicative_front_color, additive_front_color, 0.75);
+            front_color = mix(multiplicative_front_color, additive_front_color, 0.85);
             front_normal = normalize(mix(primary_normal, fallback_normal, consensus_blend));
         }
         let depth_delta = normalized_z - front_depth;
