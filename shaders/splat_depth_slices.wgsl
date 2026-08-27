@@ -129,6 +129,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         var coherent_layer_evidence = 0.0;
         var front_depth = feature.z;
         var front_luminance = select(fallback_luminance, primary_payload.x, primary_valid);
+        var front_color = fallback_color;
         let front_depth_sigma = select(0.0, primary_payload.y * radius_z, primary_valid);
         var front_normal = decode_octahedral(feature.xy);
         if (primary_valid && fallback_valid) {
@@ -158,6 +159,12 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
                 fallback_luminance,
                 consensus_blend,
             );
+            let luminance_scale = clamp(
+                front_luminance / max(fallback_luminance, 1.0 / 63.0),
+                0.5,
+                2.0,
+            );
+            front_color = clamp(fallback_color * luminance_scale, vec3f(0.0), vec3f(1.0));
             front_normal = normalize(mix(primary_normal, fallback_normal, consensus_blend));
         }
         let depth_delta = normalized_z - front_depth;
@@ -189,7 +196,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         let normal_gate = exp(-32.0 * (1.0 - normal_similarity));
         let fragment_luminance = clamp(dot(in.color, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
         let luminance_gate = exp(-2.0 * abs(fragment_luminance - front_luminance));
-        let raw_color_gate = exp(-4.0 * dot(in.color - fallback_color, in.color - fallback_color));
+        let raw_color_gate = exp(-4.0 * dot(in.color - front_color, in.color - front_color));
         let color_gate = select(
             1.0,
             mix(1.0, raw_color_gate, 0.5 * observation_confidence),
