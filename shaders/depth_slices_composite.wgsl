@@ -50,6 +50,6 @@ fn fs_main(in: CompositeOutput) -> @location(0) vec4<f32> {
     let guide = textureLoad(front_color_filtered, pixel, 0);
     let guide_confidence = smoothstep(1.0, 9.0, guide.a)
         * smoothstep(0.50, 0.95, center.a);
-    let guided_color = mix(center_color, guide.rgb, 0.05 * guide_confidence);
+    let guided_color = mix(center_color, guide.rgb, 0.10 * guide_confidence);
     return vec4f(guided_color * center.a, center.a);
 }
