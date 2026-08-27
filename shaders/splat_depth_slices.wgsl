@@ -306,7 +306,9 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     // transitions without adding another pass or attachment.
     // Front-loaded representatives: an error near the eye modulates every layer
     // behind it, so spend more of the fixed four-layer budget there.
-    let core_warp = smoothstep(0.04, 0.48, alpha);
+    let dense_depth_support = smoothstep(0.04, 0.20, cdf_sample.g);
+    let core_warp_end = mix(0.48, 0.64, dense_depth_support);
+    let core_warp = smoothstep(0.04, core_warp_end, alpha);
     let warped_quantile = mix(
         optical_quantile,
         pow(optical_quantile, 0.75),
