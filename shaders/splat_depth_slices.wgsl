@@ -179,8 +179,8 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             // The fallback's packed RGB is deliberately noisy.  Average only
             // color from strongly coplanar neighbors; depth, normal, and all
             // confidence decisions continue to use the unbiased center sample.
-            var reconstruction_color = 4.0 * fallback_color;
-            var reconstruction_weight = 4.0;
+            var reconstruction_color = 2.0 * fallback_color;
+            var reconstruction_weight = 2.0;
             let fallback_size = vec2<i32>(textureDimensions(front_feature_fallback));
             let neighbor_offsets = array<vec2<i32>, 8>(
                 vec2<i32>(-1, 0), vec2<i32>(1, 0),
