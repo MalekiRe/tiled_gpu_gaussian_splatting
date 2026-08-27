@@ -234,8 +234,8 @@ impl HistogramWboitPipeline {
                 source: wgpu::ShaderSource::Wgsl(spatial_cdf_build_wgsl.into()),
             });
         let high_quality_spatial_cdf_source = spatial_cdf_build_wgsl
-            .replace("const PRIOR_WIDTH: u32 = 8u;", "const PRIOR_WIDTH: u32 = 16u;")
-            .replace("const PRIOR_HEIGHT: u32 = 8u;", "const PRIOR_HEIGHT: u32 = 9u;");
+            .replace("const PRIOR_WIDTH: u32 = 8u;", "const PRIOR_WIDTH: u32 = 20u;")
+            .replace("const PRIOR_HEIGHT: u32 = 8u;", "const PRIOR_HEIGHT: u32 = 12u;");
         let high_quality_spatial_cdf_build_shader =
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("high quality spatial cdf build shader"),

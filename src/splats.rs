@@ -12,8 +12,8 @@ pub const SPATIAL_PRIOR_WIDTH: usize = 8;
 pub const SPATIAL_PRIOR_HEIGHT: usize = 8;
 pub const SPATIAL_PRIOR_DEPTH_BINS: usize = 32;
 pub const HQ_DIRECTIONAL_VIEW_COUNT: usize = 256;
-pub const HQ_SPATIAL_PRIOR_WIDTH: usize = 16;
-pub const HQ_SPATIAL_PRIOR_HEIGHT: usize = 9;
+pub const HQ_SPATIAL_PRIOR_WIDTH: usize = 20;
+pub const HQ_SPATIAL_PRIOR_HEIGHT: usize = 12;
 
 /// A compact view-dependent optical-depth prior. Each row is baked from one evenly
 /// distributed camera direction and uses scene-relative depth in [-radius, radius].
