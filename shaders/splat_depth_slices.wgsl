@@ -53,12 +53,13 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     );
     let u = in.clip_position.x / f32(histo_params.tile_count_x * TILE_SIZE);
     let v = in.clip_position.y / f32(histo_params.tile_count_y * TILE_SIZE);
-    var optical_quantile = textureSampleLevel(
+    let cdf_sample = textureSampleLevel(
         cdf_texture,
         cdf_sampler,
         vec3f(u, v, clamp(normalized_z + 0.5 / f32(histo_params.num_bins), 0.0, 1.0)),
         0.0,
-    ).r;
+    );
+    var optical_quantile = cdf_sample.r;
     let pixel = vec2<i32>(in.clip_position.xy);
     let primary_feature = textureLoad(front_feature, pixel, 0);
     let fallback_feature = textureLoad(front_feature_fallback, pixel, 0);
@@ -131,7 +132,10 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     // semi-transparent copies of a surface-defining sample.
     let assignment_gradient = fwidth(slice_position);
     let spatial_stability = 1.0 - smoothstep(0.10, 0.60, assignment_gradient);
-    let hard_assignment = smoothstep(0.10, 0.24, alpha) * spatial_stability;
+    let depth_certainty = 1.0 - smoothstep(0.04, 0.20, cdf_sample.g);
+    let hard_assignment = smoothstep(0.10, 0.24, alpha)
+        * spatial_stability
+        * depth_certainty;
     let assigned_position = mix(slice_position, round(slice_position), hard_assignment);
     let lower_slice = u32(floor(assigned_position));
     let upper_slice = min(lower_slice + 1u, 3u);

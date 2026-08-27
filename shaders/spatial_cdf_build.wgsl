@@ -74,6 +74,6 @@ fn main(
     textureStore(
         cdf_out,
         vec3i(i32(tile_x), i32(tile_y), i32(bin)),
-        vec4f(cdf, 0.0, 0.0, 0.0),
+        vec4f(cdf, select(0.0, bin_value / total, total > 0.0), 0.0, 0.0),
     );
 }
