@@ -69,11 +69,33 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     );
     let u = in.clip_position.x / f32(histo_params.tile_count_x * TILE_SIZE);
     let v = in.clip_position.y / f32(histo_params.tile_count_y * TILE_SIZE);
-    let cdf_sample = textureSampleLevel(
+    let cdf_z = normalized_z + 0.5 / f32(histo_params.num_bins);
+    let cdf_center = textureSampleLevel(
         cdf_texture,
         cdf_sampler,
-        vec3f(u, v, clamp(normalized_z + 0.5 / f32(histo_params.num_bins), 0.0, 1.0)),
+        vec3f(u, v, clamp(cdf_z, 0.0, 1.0)),
         0.0,
+    );
+    // Use the Gaussian's eye-depth extent to estimate local CDF curvature. A
+    // mild unsharp correction counters depth-bin interpolation blur without
+    // adding storage or incoherent memory access.
+    let cdf_extent = 1.7320508 * in.depth_sigma;
+    let cdf_front = textureSampleLevel(
+        cdf_texture,
+        cdf_sampler,
+        vec3f(u, v, clamp(cdf_z - cdf_extent, 0.0, 1.0)),
+        0.0,
+    );
+    let cdf_back = textureSampleLevel(
+        cdf_texture,
+        cdf_sampler,
+        vec3f(u, v, clamp(cdf_z + cdf_extent, 0.0, 1.0)),
+        0.0,
+    );
+    let cdf_sample = clamp(
+        1.25 * cdf_center - 0.125 * (cdf_front + cdf_back),
+        vec4<f32>(0.0),
+        vec4<f32>(1.0),
     );
     var optical_quantile = cdf_sample.r;
     let pixel = vec2<i32>(in.clip_position.xy);
