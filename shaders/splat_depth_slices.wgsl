@@ -93,7 +93,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         0.0,
     );
     let cdf_sample = clamp(
-        1.25 * cdf_center - 0.125 * (cdf_front + cdf_back),
+        1.5 * cdf_center - 0.25 * (cdf_front + cdf_back),
         vec4<f32>(0.0),
         vec4<f32>(1.0),
     );
