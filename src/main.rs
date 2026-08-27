@@ -14,7 +14,8 @@ fn main() {
     env_logger::init();
 
     // With a PLY argument the demo renders that Gaussian splat scene through all three
-    // transparency modes; without one it falls back to the built-in quad/mesh scene.
+    // transparency modes; mode 4 adds a baked directional prior to mode 3. Without a PLY
+    // it falls back to the built-in quad/mesh scene.
     let path: Option<PathBuf> = std::env::args().nth(1).map(PathBuf::from);
     let splats = match path {
         Some(path) => {

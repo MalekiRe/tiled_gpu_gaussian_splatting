@@ -80,3 +80,11 @@ pub struct HistogramParams {
     pub num_bins: u32,
     pub tile_size: u32,
 }
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct DirectionalPriorParams {
+    pub mix_factor: f32,
+    pub enabled: u32,
+    pub _padding: [u32; 2],
+}

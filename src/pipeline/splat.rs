@@ -9,6 +9,7 @@ pub struct SplatPipelines {
     pub alpha_pipeline: wgpu::RenderPipeline,
     pub wboit_pipeline: wgpu::RenderPipeline,
     pub histo_pipeline: wgpu::RenderPipeline,
+    pub baked_histo_pipeline: wgpu::RenderPipeline,
     pub splat_bgl: wgpu::BindGroupLayout,
 }
 
@@ -222,10 +223,39 @@ impl SplatPipelines {
             cache: None,
         });
 
+        let baked_histo_shader = shader(
+            device,
+            "splat baked histo shader",
+            include_str!("../../shaders/splat_baked_histo.wgsl"),
+        );
+        let baked_histo_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("splat baked histo pipeline"),
+                layout: Some(&histo_layout),
+                vertex: wgpu::VertexState {
+                    module: &baked_histo_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &baked_histo_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &mrt_targets,
+                    compilation_options: Default::default(),
+                }),
+                primitive,
+                depth_stencil: Some(depth_state()),
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+
         Self {
             alpha_pipeline,
             wboit_pipeline,
             histo_pipeline,
+            baked_histo_pipeline,
             splat_bgl,
         }
     }

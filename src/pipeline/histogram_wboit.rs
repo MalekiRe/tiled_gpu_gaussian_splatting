@@ -4,6 +4,7 @@ pub struct HistogramWboitPipeline {
     pub accum_pipeline: wgpu::RenderPipeline,
     pub composite_pipeline: wgpu::RenderPipeline,
     pub cdf_build_pipeline: wgpu::ComputePipeline,
+    pub spatial_cdf_build_pipeline: wgpu::ComputePipeline,
     pub histo_accum_bgl: wgpu::BindGroupLayout,
     pub histo_composite_tex_bgl: wgpu::BindGroupLayout,
     pub cdf_build_bgl: wgpu::BindGroupLayout,
@@ -99,7 +100,8 @@ impl HistogramWboitPipeline {
                 ],
             });
 
-        // CDF build compute: histogram rw, CDF 3D storage texture write, params uniform
+        // CDF build compute: live histogram, CDF output, tiled params, directional prior,
+        // and controls for mixing the prior into the live distribution.
         let cdf_build_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("cdf build bgl"),
             entries: &[
@@ -125,6 +127,26 @@ impl HistogramWboitPipeline {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -173,6 +195,7 @@ impl HistogramWboitPipeline {
         let accum_wgsl = include_str!("../../shaders/histo_accum.wgsl");
         let composite_wgsl = include_str!("../../shaders/histo_composite.wgsl");
         let cdf_build_wgsl = include_str!("../../shaders/histo_cdf_build.wgsl");
+        let spatial_cdf_build_wgsl = include_str!("../../shaders/spatial_cdf_build.wgsl");
 
         let (accum_pipeline, composite_pipeline) = create_pipeline_pair(
             device,
@@ -188,6 +211,11 @@ impl HistogramWboitPipeline {
             label: Some("cdf_build shader"),
             source: wgpu::ShaderSource::Wgsl(cdf_build_wgsl.into()),
         });
+        let spatial_cdf_build_shader =
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("spatial cdf build shader"),
+                source: wgpu::ShaderSource::Wgsl(spatial_cdf_build_wgsl.into()),
+            });
 
         let cdf_build_pipeline =
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -198,11 +226,21 @@ impl HistogramWboitPipeline {
                 compilation_options: Default::default(),
                 cache: None,
             });
+        let spatial_cdf_build_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("spatial cdf build pipeline"),
+                layout: Some(&cdf_build_layout),
+                module: &spatial_cdf_build_shader,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
 
         Self {
             accum_pipeline,
             composite_pipeline,
             cdf_build_pipeline,
+            spatial_cdf_build_pipeline,
             histo_accum_bgl,
             histo_composite_tex_bgl,
             cdf_build_bgl,

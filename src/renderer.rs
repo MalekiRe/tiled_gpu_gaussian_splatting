@@ -4,8 +4,13 @@ use crate::pipeline::histogram_wboit::HistogramWboitPipeline;
 use crate::pipeline::naive_wboit::NaiveWboitPipeline;
 use crate::pipeline::splat::SplatPipelines;
 use crate::scene::Scene;
-use crate::splats::SplatScene;
-use crate::vertex::{CameraUniform, HistogramParams, ObjectUniform, SplatParams};
+use crate::splats::{
+    DIRECTIONAL_DEPTH_BINS, DirectionalHistogramPrior, SPATIAL_PRIOR_HEIGHT,
+    SPATIAL_PRIOR_WIDTH, SpatialDirectionalHistogramPrior, SplatScene,
+};
+use crate::vertex::{
+    CameraUniform, DirectionalPriorParams, HistogramParams, ObjectUniform, SplatParams,
+};
 
 const NUM_DEPTH_BINS: u32 = 64;
 const TILE_SIZE: u32 = 32;
@@ -15,6 +20,8 @@ pub enum RenderMode {
     AlphaBlend = 1,
     NaiveWboit = 2,
     HistogramWboit = 3,
+    DirectionalHistogramWboit = 4,
+    SpatialBakedHistogramWboit = 5,
 }
 
 impl RenderMode {
@@ -23,6 +30,12 @@ impl RenderMode {
             RenderMode::AlphaBlend => "Alpha Blend",
             RenderMode::NaiveWboit => "Naive WBOIT",
             RenderMode::HistogramWboit => "Histogram-Equalized WBOIT (tiled)",
+            RenderMode::DirectionalHistogramWboit => {
+                "Directional-Prior Histogram WBOIT (64 baked views)"
+            }
+            RenderMode::SpatialBakedHistogramWboit => {
+                "Spatial Baked Histogram WBOIT (atomics-free)"
+            }
         }
     }
 }
@@ -95,6 +108,10 @@ pub struct Renderer {
     cdf_build_bind_group: wgpu::BindGroup,
     histo_composite_flag_bind_group: wgpu::BindGroup,
     histo_params: HistogramParams,
+    directional_prior: Option<DirectionalHistogramPrior>,
+    spatial_directional_prior: Option<SpatialDirectionalHistogramPrior>,
+    directional_prior_buffer: wgpu::Buffer,
+    directional_prior_params_buffer: wgpu::Buffer,
 
     // Bind group layouts (needed for recreation)
     #[allow(dead_code)]
@@ -285,6 +302,38 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
+        let directional_prior_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("directional histogram prior buffer"),
+            size: (SPATIAL_PRIOR_WIDTH
+                * SPATIAL_PRIOR_HEIGHT
+                * DIRECTIONAL_DEPTH_BINS
+                * std::mem::size_of::<f32>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let uniform_prior = [1.0 / DIRECTIONAL_DEPTH_BINS as f32; DIRECTIONAL_DEPTH_BINS];
+        queue.write_buffer(
+            &directional_prior_buffer,
+            0,
+            bytemuck::cast_slice(&uniform_prior),
+        );
+
+        let directional_prior_params_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("directional histogram prior params"),
+            size: std::mem::size_of::<DirectionalPriorParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(
+            &directional_prior_params_buffer,
+            0,
+            bytemuck::bytes_of(&DirectionalPriorParams {
+                mix_factor: 0.0,
+                enabled: 0,
+                _padding: [0; 2],
+            }),
+        );
+
         let (cdf_texture, cdf_texture_view) =
             create_cdf_texture(&device, tiles_x, tiles_y, NUM_DEPTH_BINS);
         let _ = cdf_texture; // view keeps texture alive via Arc internally
@@ -372,6 +421,14 @@ impl Renderer {
                     binding: 2,
                     resource: histo_params_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: directional_prior_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: directional_prior_params_buffer.as_entire_binding(),
+                },
             ],
         });
 
@@ -416,6 +473,10 @@ impl Renderer {
             cdf_build_bind_group,
             histo_composite_flag_bind_group,
             histo_params,
+            directional_prior: None,
+            spatial_directional_prior: None,
+            directional_prior_buffer,
+            directional_prior_params_buffer,
             camera_bgl,
             object_bgl,
         }
@@ -424,6 +485,8 @@ impl Renderer {
     /// Move a parsed splat scene onto the GPU. From here on, `render` draws splats.
     pub fn upload_splats(&mut self, scene: &SplatScene) {
         let total = scene.len() as u32;
+        self.directional_prior = Some(scene.directional_prior.clone());
+        self.spatial_directional_prior = Some(scene.spatial_directional_prior.clone());
 
         let splat_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("splat buffer"),
@@ -543,11 +606,20 @@ impl Renderer {
             let pipeline = match mode {
                 RenderMode::AlphaBlend => &self.splat_pipelines.alpha_pipeline,
                 RenderMode::NaiveWboit => &self.splat_pipelines.wboit_pipeline,
-                RenderMode::HistogramWboit => &self.splat_pipelines.histo_pipeline,
+                RenderMode::HistogramWboit | RenderMode::DirectionalHistogramWboit => {
+                    &self.splat_pipelines.histo_pipeline
+                }
+                RenderMode::SpatialBakedHistogramWboit => {
+                    &self.splat_pipelines.baked_histo_pipeline
+                }
             };
             pass.set_pipeline(pipeline);
             pass.set_bind_group(1, &sp.bind_group, &[]);
-            if mode == RenderMode::HistogramWboit {
+            if matches!(
+                mode,
+                RenderMode::HistogramWboit | RenderMode::DirectionalHistogramWboit
+                    | RenderMode::SpatialBakedHistogramWboit
+            ) {
                 pass.set_bind_group(2, &self.histo_accum_bind_groups[self.frame_index], &[]);
             }
             // One instanced quad per splat, expanded to the projected 3-sigma extent.
@@ -558,10 +630,17 @@ impl Renderer {
         let pipeline = match mode {
             RenderMode::AlphaBlend => &self.alpha_blend.pipeline,
             RenderMode::NaiveWboit => &self.naive_wboit.accum_pipeline,
-            RenderMode::HistogramWboit => &self.histogram_wboit.accum_pipeline,
+            RenderMode::HistogramWboit | RenderMode::DirectionalHistogramWboit => {
+                &self.histogram_wboit.accum_pipeline
+            }
+            RenderMode::SpatialBakedHistogramWboit => &self.histogram_wboit.accum_pipeline,
         };
         pass.set_pipeline(pipeline);
-        if mode == RenderMode::HistogramWboit {
+        if matches!(
+            mode,
+            RenderMode::HistogramWboit | RenderMode::DirectionalHistogramWboit
+                | RenderMode::SpatialBakedHistogramWboit
+        ) {
             pass.set_bind_group(2, &self.histo_accum_bind_groups[self.frame_index], &[]);
         }
 
@@ -745,6 +824,14 @@ impl Renderer {
                         binding: 2,
                         resource: self.histo_params_buffer.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: self.directional_prior_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: self.directional_prior_params_buffer.as_entire_binding(),
+                    },
                 ],
             });
     }
@@ -754,6 +841,50 @@ impl Renderer {
         let cam_uniform = camera.uniform();
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&cam_uniform));
+
+        let use_directional_prior =
+            self.mode == RenderMode::DirectionalHistogramWboit && self.directional_prior.is_some();
+        if use_directional_prior {
+            let prior = self.directional_prior.as_ref().unwrap().sample_for_camera(
+                camera.forward(),
+                camera.distance,
+                camera.near,
+                camera.far,
+            );
+            self.queue.write_buffer(
+                &self.directional_prior_buffer,
+                0,
+                bytemuck::cast_slice(&prior),
+            );
+        }
+        let use_spatial_prior = self.mode == RenderMode::SpatialBakedHistogramWboit
+            && self.spatial_directional_prior.is_some();
+        if use_spatial_prior {
+            let prior = self
+                .spatial_directional_prior
+                .as_ref()
+                .unwrap()
+                .sample_for_camera(
+                    camera.forward(),
+                    camera.distance,
+                    camera.near,
+                    camera.far,
+                );
+            self.queue.write_buffer(
+                &self.directional_prior_buffer,
+                0,
+                bytemuck::cast_slice(&prior),
+            );
+        }
+        self.queue.write_buffer(
+            &self.directional_prior_params_buffer,
+            0,
+            bytemuck::bytes_of(&DirectionalPriorParams {
+                mix_factor: if use_directional_prior { 0.75 } else { 0.0 },
+                enabled: u32::from(use_directional_prior),
+                _padding: [0; 2],
+            }),
+        );
 
         // Update revealage flag
         let flag: u32 = if self.use_revealage { 1 } else { 0 };
@@ -846,7 +977,18 @@ impl Renderer {
                 self.render_naive_wboit(&mut encoder, &view, &visible);
             }
             RenderMode::HistogramWboit => {
-                self.render_histogram_wboit(&mut encoder, &view, &visible);
+                self.render_histogram_wboit(&mut encoder, &view, &visible, false);
+            }
+            RenderMode::DirectionalHistogramWboit => {
+                self.render_histogram_wboit(&mut encoder, &view, &visible, false);
+            }
+            RenderMode::SpatialBakedHistogramWboit => {
+                self.render_histogram_wboit(
+                    &mut encoder,
+                    &view,
+                    &visible,
+                    self.splats.is_some(),
+                );
             }
         }
 
@@ -978,10 +1120,27 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         visible: &[usize],
+        spatial_baked: bool,
     ) {
         let fi = self.frame_index;
 
-        // Pass 1: Accumulation + tiled histogram recording
+        // Mode 5's CDF depends only on the tiny baked volume, so build it before drawing.
+        // The following fragment pass can consume it immediately and performs no atomics.
+        if spatial_baked {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("spatial baked cdf build pass"),
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.histogram_wboit.spatial_cdf_build_pipeline);
+            pass.set_bind_group(0, &self.cdf_build_bind_group, &[]);
+            pass.dispatch_workgroups(
+                self.histo_params.tile_count_x,
+                self.histo_params.tile_count_y,
+                1,
+            );
+        }
+
+        // Accumulation. Modes 3/4 also record a live histogram; mode 5 only samples.
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("histo accum pass"),
@@ -1021,18 +1180,30 @@ impl Renderer {
                 ..Default::default()
             });
 
-            self.draw_scene(&mut pass, visible, RenderMode::HistogramWboit);
+            self.draw_scene(
+                &mut pass,
+                visible,
+                if spatial_baked {
+                    RenderMode::SpatialBakedHistogramWboit
+                } else {
+                    self.mode
+                },
+            );
         }
 
-        // Pass 2: CDF build (compute) — one workgroup per tile
-        {
+        // Modes 3/4 build next frame's CDF from the histogram recorded above.
+        if !spatial_baked {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("cdf build pass"),
                 ..Default::default()
             });
             pass.set_pipeline(&self.histogram_wboit.cdf_build_pipeline);
             pass.set_bind_group(0, &self.cdf_build_bind_group, &[]);
-            pass.dispatch_workgroups(self.histo_params.tile_count_x, self.histo_params.tile_count_y, 1);
+            pass.dispatch_workgroups(
+                self.histo_params.tile_count_x,
+                self.histo_params.tile_count_y,
+                1,
+            );
         }
 
         // Pass 3: Composite

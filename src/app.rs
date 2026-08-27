@@ -54,9 +54,9 @@ impl ApplicationHandler for App {
         }
 
         let title = if self.splats.is_some() {
-            "3DGS WBOIT Demo - 1/2/3 modes, A revealage, C cap, [ ] splat size, R reset"
+            "3DGS WBOIT Demo - 1/2/3/4/5 modes, A revealage, C cap, [ ] size, R reset"
         } else {
-            "WBOIT Demo - Press 1/2/3 to switch modes, A to toggle revealage, M to toggle meshes"
+            "WBOIT Demo - Press 1/2/3/4/5 to switch modes, A revealage, M meshes"
         };
         let attrs = Window::default_attributes()
             .with_title(title)
@@ -115,6 +115,14 @@ impl ApplicationHandler for App {
                             }
                             "3" => {
                                 renderer.mode = RenderMode::HistogramWboit;
+                                println!("Mode: {}", renderer.mode.name());
+                            }
+                            "4" => {
+                                renderer.mode = RenderMode::DirectionalHistogramWboit;
+                                println!("Mode: {}", renderer.mode.name());
+                            }
+                            "5" => {
+                                renderer.mode = RenderMode::SpatialBakedHistogramWboit;
                                 println!("Mode: {}", renderer.mode.name());
                             }
                             "a" | "A" => {
