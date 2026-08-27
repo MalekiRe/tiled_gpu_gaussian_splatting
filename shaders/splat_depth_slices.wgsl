@@ -182,11 +182,13 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             var reconstruction_color = 4.0 * fallback_color;
             var reconstruction_weight = 4.0;
             let fallback_size = vec2<i32>(textureDimensions(front_feature_fallback));
-            let neighbor_offsets = array<vec2<i32>, 4>(
+            let neighbor_offsets = array<vec2<i32>, 8>(
                 vec2<i32>(-1, 0), vec2<i32>(1, 0),
                 vec2<i32>(0, -1), vec2<i32>(0, 1),
+                vec2<i32>(-1, -1), vec2<i32>(1, -1),
+                vec2<i32>(-1, 1), vec2<i32>(1, 1),
             );
-            for (var neighbor_index = 0u; neighbor_index < 4u; neighbor_index++) {
+            for (var neighbor_index = 0u; neighbor_index < 8u; neighbor_index++) {
                 let neighbor_pixel = clamp(
                     pixel + neighbor_offsets[neighbor_index],
                     vec2<i32>(0),
