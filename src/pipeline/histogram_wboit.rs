@@ -5,6 +5,7 @@ pub struct HistogramWboitPipeline {
     pub composite_pipeline: wgpu::RenderPipeline,
     pub cdf_build_pipeline: wgpu::ComputePipeline,
     pub spatial_cdf_build_pipeline: wgpu::ComputePipeline,
+    pub high_quality_spatial_cdf_build_pipeline: wgpu::ComputePipeline,
     pub histo_accum_bgl: wgpu::BindGroupLayout,
     pub histo_composite_tex_bgl: wgpu::BindGroupLayout,
     pub cdf_build_bgl: wgpu::BindGroupLayout,
@@ -216,6 +217,14 @@ impl HistogramWboitPipeline {
                 label: Some("spatial cdf build shader"),
                 source: wgpu::ShaderSource::Wgsl(spatial_cdf_build_wgsl.into()),
             });
+        let high_quality_spatial_cdf_source = spatial_cdf_build_wgsl
+            .replace("const PRIOR_WIDTH: u32 = 8u;", "const PRIOR_WIDTH: u32 = 16u;")
+            .replace("const PRIOR_HEIGHT: u32 = 8u;", "const PRIOR_HEIGHT: u32 = 9u;");
+        let high_quality_spatial_cdf_build_shader =
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("high quality spatial cdf build shader"),
+                source: wgpu::ShaderSource::Wgsl(high_quality_spatial_cdf_source.into()),
+            });
 
         let cdf_build_pipeline =
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -235,12 +244,22 @@ impl HistogramWboitPipeline {
                 compilation_options: Default::default(),
                 cache: None,
             });
+        let high_quality_spatial_cdf_build_pipeline =
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("high quality spatial cdf build pipeline"),
+                layout: Some(&cdf_build_layout),
+                module: &high_quality_spatial_cdf_build_shader,
+                entry_point: Some("main"),
+                compilation_options: Default::default(),
+                cache: None,
+            });
 
         Self {
             accum_pipeline,
             composite_pipeline,
             cdf_build_pipeline,
             spatial_cdf_build_pipeline,
+            high_quality_spatial_cdf_build_pipeline,
             histo_accum_bgl,
             histo_composite_tex_bgl,
             cdf_build_bgl,

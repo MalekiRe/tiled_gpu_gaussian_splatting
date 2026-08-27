@@ -5,8 +5,9 @@ use crate::pipeline::naive_wboit::NaiveWboitPipeline;
 use crate::pipeline::splat::SplatPipelines;
 use crate::scene::Scene;
 use crate::splats::{
-    DIRECTIONAL_DEPTH_BINS, DirectionalHistogramPrior, SPATIAL_PRIOR_HEIGHT,
-    SPATIAL_PRIOR_WIDTH, SpatialDirectionalHistogramPrior, SplatScene,
+    DIRECTIONAL_DEPTH_BINS, DirectionalHistogramPrior, HQ_SPATIAL_PRIOR_HEIGHT,
+    HQ_SPATIAL_PRIOR_WIDTH,
+    HighQualitySpatialDirectionalPrior, SpatialDirectionalHistogramPrior, SplatScene,
 };
 use crate::vertex::{
     CameraUniform, DirectionalPriorParams, HistogramParams, ObjectUniform, SplatParams,
@@ -22,6 +23,7 @@ pub enum RenderMode {
     HistogramWboit = 3,
     DirectionalHistogramWboit = 4,
     SpatialBakedHistogramWboit = 5,
+    HighQualitySpatialBakedWboit = 6,
 }
 
 impl RenderMode {
@@ -35,6 +37,9 @@ impl RenderMode {
             }
             RenderMode::SpatialBakedHistogramWboit => {
                 "Spatial Baked Histogram WBOIT (atomics-free)"
+            }
+            RenderMode::HighQualitySpatialBakedWboit => {
+                "HQ Spatial Bake (256 views, 16x9, Gaussian footprints)"
             }
         }
     }
@@ -110,6 +115,7 @@ pub struct Renderer {
     histo_params: HistogramParams,
     directional_prior: Option<DirectionalHistogramPrior>,
     spatial_directional_prior: Option<SpatialDirectionalHistogramPrior>,
+    high_quality_spatial_prior: Option<HighQualitySpatialDirectionalPrior>,
     directional_prior_buffer: wgpu::Buffer,
     directional_prior_params_buffer: wgpu::Buffer,
 
@@ -304,8 +310,8 @@ impl Renderer {
 
         let directional_prior_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("directional histogram prior buffer"),
-            size: (SPATIAL_PRIOR_WIDTH
-                * SPATIAL_PRIOR_HEIGHT
+            size: (HQ_SPATIAL_PRIOR_WIDTH
+                * HQ_SPATIAL_PRIOR_HEIGHT
                 * DIRECTIONAL_DEPTH_BINS
                 * std::mem::size_of::<f32>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
@@ -475,6 +481,7 @@ impl Renderer {
             histo_params,
             directional_prior: None,
             spatial_directional_prior: None,
+            high_quality_spatial_prior: None,
             directional_prior_buffer,
             directional_prior_params_buffer,
             camera_bgl,
@@ -487,6 +494,7 @@ impl Renderer {
         let total = scene.len() as u32;
         self.directional_prior = Some(scene.directional_prior.clone());
         self.spatial_directional_prior = Some(scene.spatial_directional_prior.clone());
+        self.high_quality_spatial_prior = Some(scene.high_quality_spatial_prior.clone());
 
         let splat_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("splat buffer"),
@@ -612,6 +620,9 @@ impl Renderer {
                 RenderMode::SpatialBakedHistogramWboit => {
                     &self.splat_pipelines.baked_histo_pipeline
                 }
+                RenderMode::HighQualitySpatialBakedWboit => {
+                    &self.splat_pipelines.baked_histo_pipeline
+                }
             };
             pass.set_pipeline(pipeline);
             pass.set_bind_group(1, &sp.bind_group, &[]);
@@ -619,6 +630,7 @@ impl Renderer {
                 mode,
                 RenderMode::HistogramWboit | RenderMode::DirectionalHistogramWboit
                     | RenderMode::SpatialBakedHistogramWboit
+                    | RenderMode::HighQualitySpatialBakedWboit
             ) {
                 pass.set_bind_group(2, &self.histo_accum_bind_groups[self.frame_index], &[]);
             }
@@ -634,12 +646,14 @@ impl Renderer {
                 &self.histogram_wboit.accum_pipeline
             }
             RenderMode::SpatialBakedHistogramWboit => &self.histogram_wboit.accum_pipeline,
+            RenderMode::HighQualitySpatialBakedWboit => &self.histogram_wboit.accum_pipeline,
         };
         pass.set_pipeline(pipeline);
         if matches!(
             mode,
             RenderMode::HistogramWboit | RenderMode::DirectionalHistogramWboit
                 | RenderMode::SpatialBakedHistogramWboit
+                | RenderMode::HighQualitySpatialBakedWboit
         ) {
             pass.set_bind_group(2, &self.histo_accum_bind_groups[self.frame_index], &[]);
         }
@@ -876,6 +890,25 @@ impl Renderer {
                 bytemuck::cast_slice(&prior),
             );
         }
+        let use_high_quality_spatial_prior = self.mode == RenderMode::HighQualitySpatialBakedWboit
+            && self.high_quality_spatial_prior.is_some();
+        if use_high_quality_spatial_prior {
+            let prior = self
+                .high_quality_spatial_prior
+                .as_ref()
+                .unwrap()
+                .sample_for_camera(
+                    camera.forward(),
+                    camera.distance,
+                    camera.near,
+                    camera.far,
+                );
+            self.queue.write_buffer(
+                &self.directional_prior_buffer,
+                0,
+                bytemuck::cast_slice(&prior),
+            );
+        }
         self.queue.write_buffer(
             &self.directional_prior_params_buffer,
             0,
@@ -977,17 +1010,25 @@ impl Renderer {
                 self.render_naive_wboit(&mut encoder, &view, &visible);
             }
             RenderMode::HistogramWboit => {
-                self.render_histogram_wboit(&mut encoder, &view, &visible, false);
+                self.render_histogram_wboit(&mut encoder, &view, &visible, 0);
             }
             RenderMode::DirectionalHistogramWboit => {
-                self.render_histogram_wboit(&mut encoder, &view, &visible, false);
+                self.render_histogram_wboit(&mut encoder, &view, &visible, 0);
             }
             RenderMode::SpatialBakedHistogramWboit => {
                 self.render_histogram_wboit(
                     &mut encoder,
                     &view,
                     &visible,
-                    self.splats.is_some(),
+                    if self.splats.is_some() { 1 } else { 0 },
+                );
+            }
+            RenderMode::HighQualitySpatialBakedWboit => {
+                self.render_histogram_wboit(
+                    &mut encoder,
+                    &view,
+                    &visible,
+                    if self.splats.is_some() { 2 } else { 0 },
                 );
             }
         }
@@ -1120,18 +1161,24 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         view: &wgpu::TextureView,
         visible: &[usize],
-        spatial_baked: bool,
+        spatial_baked: u32,
     ) {
         let fi = self.frame_index;
 
         // Mode 5's CDF depends only on the tiny baked volume, so build it before drawing.
         // The following fragment pass can consume it immediately and performs no atomics.
-        if spatial_baked {
+        if spatial_baked != 0 {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("spatial baked cdf build pass"),
                 ..Default::default()
             });
-            pass.set_pipeline(&self.histogram_wboit.spatial_cdf_build_pipeline);
+            pass.set_pipeline(if spatial_baked == 2 {
+                &self
+                    .histogram_wboit
+                    .high_quality_spatial_cdf_build_pipeline
+            } else {
+                &self.histogram_wboit.spatial_cdf_build_pipeline
+            });
             pass.set_bind_group(0, &self.cdf_build_bind_group, &[]);
             pass.dispatch_workgroups(
                 self.histo_params.tile_count_x,
@@ -1183,7 +1230,9 @@ impl Renderer {
             self.draw_scene(
                 &mut pass,
                 visible,
-                if spatial_baked {
+                if spatial_baked == 2 {
+                    RenderMode::HighQualitySpatialBakedWboit
+                } else if spatial_baked == 1 {
                     RenderMode::SpatialBakedHistogramWboit
                 } else {
                     self.mode
@@ -1192,7 +1241,7 @@ impl Renderer {
         }
 
         // Modes 3/4 build next frame's CDF from the histogram recorded above.
-        if !spatial_baked {
+        if spatial_baked == 0 {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("cdf build pass"),
                 ..Default::default()

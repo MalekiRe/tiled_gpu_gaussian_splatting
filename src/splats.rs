@@ -11,6 +11,9 @@ pub const DIRECTIONAL_DEPTH_BINS: usize = 64;
 pub const SPATIAL_PRIOR_WIDTH: usize = 8;
 pub const SPATIAL_PRIOR_HEIGHT: usize = 8;
 pub const SPATIAL_PRIOR_DEPTH_BINS: usize = 32;
+pub const HQ_DIRECTIONAL_VIEW_COUNT: usize = 256;
+pub const HQ_SPATIAL_PRIOR_WIDTH: usize = 16;
+pub const HQ_SPATIAL_PRIOR_HEIGHT: usize = 9;
 
 /// A compact view-dependent optical-depth prior. Each row is baked from one evenly
 /// distributed camera direction and uses scene-relative depth in [-radius, radius].
@@ -26,6 +29,15 @@ pub struct DirectionalHistogramPrior {
 #[derive(Clone)]
 pub struct SpatialDirectionalHistogramPrior {
     directions: [[f32; 3]; DIRECTIONAL_VIEW_COUNT],
+    histograms: Vec<f32>,
+    radius: f32,
+}
+
+/// Higher quality spatial bake used by mode 6. Unlike mode 5, this rasterizes each
+/// projected Gaussian ellipse across every coarse screen cell it overlaps.
+#[derive(Clone)]
+pub struct HighQualitySpatialDirectionalPrior {
+    directions: Vec<[f32; 3]>,
     histograms: Vec<f32>,
     radius: f32,
 }
@@ -55,6 +67,7 @@ pub struct SplatScene {
     pub radius: f32,
     pub directional_prior: DirectionalHistogramPrior,
     pub spatial_directional_prior: SpatialDirectionalHistogramPrior,
+    pub high_quality_spatial_prior: HighQualitySpatialDirectionalPrior,
 }
 
 /// 3DGS scenes come out of COLMAP with +Y down and +Z into the screen; flip both so the
@@ -127,6 +140,8 @@ impl SplatScene {
         let directional_prior = DirectionalHistogramPrior::bake(&gpu, center, radius);
         let spatial_directional_prior =
             SpatialDirectionalHistogramPrior::bake(&gpu, center, radius);
+        let high_quality_spatial_prior =
+            HighQualitySpatialDirectionalPrior::bake(&gpu, center, radius);
 
         Self {
             gpu,
@@ -137,6 +152,7 @@ impl SplatScene {
             radius,
             directional_prior,
             spatial_directional_prior,
+            high_quality_spatial_prior,
         }
     }
 
@@ -155,6 +171,18 @@ fn fibonacci_directions() -> [[f32; 3]; DIRECTIONAL_VIEW_COUNT] {
         *direction = [r * phi.cos(), y, r * phi.sin()];
     }
     directions
+}
+
+fn fibonacci_direction_vec(count: usize) -> Vec<[f32; 3]> {
+    let golden_angle = std::f32::consts::PI * (3.0 - 5.0_f32.sqrt());
+    (0..count)
+        .map(|view| {
+            let y = 1.0 - 2.0 * (view as f32 + 0.5) / count as f32;
+            let r = (1.0 - y * y).sqrt();
+            let phi = golden_angle * view as f32;
+            [r * phi.cos(), y, r * phi.sin()]
+        })
+        .collect()
 }
 
 fn nearest_direction_weights(
@@ -183,6 +211,36 @@ fn nearest_direction_weights(
     let weight_sum: f32 = weights.iter().sum();
     for weight in &mut weights {
         *weight /= weight_sum;
+    }
+    (nearest, weights)
+}
+
+fn nearest_direction_weights_dynamic(
+    directions: &[[f32; 3]],
+    forward: glam::Vec3,
+) -> ([(f32, usize); 3], [f32; 3]) {
+    let mut nearest = [(f32::NEG_INFINITY, 0usize); 3];
+    for (i, direction) in directions.iter().enumerate() {
+        let dot = forward.dot(glam::Vec3::from_array(*direction));
+        if dot > nearest[0].0 {
+            nearest[2] = nearest[1];
+            nearest[1] = nearest[0];
+            nearest[0] = (dot, i);
+        } else if dot > nearest[1].0 {
+            nearest[2] = nearest[1];
+            nearest[1] = (dot, i);
+        } else if dot > nearest[2].0 {
+            nearest[2] = (dot, i);
+        }
+    }
+
+    let mut weights = [0.0; 3];
+    for (weight, &(dot, _)) in weights.iter_mut().zip(&nearest) {
+        *weight = 1.0 / (1e-3 + 1.0 - dot.clamp(-1.0, 1.0));
+    }
+    let sum: f32 = weights.iter().sum();
+    for weight in &mut weights {
+        *weight /= sum;
     }
     (nearest, weights)
 }
@@ -316,6 +374,207 @@ impl SpatialDirectionalHistogramPrior {
         for y in 0..SPATIAL_PRIOR_HEIGHT {
             for x in 0..SPATIAL_PRIOR_WIDTH {
                 let out_base = (y * SPATIAL_PRIOR_WIDTH + x) * DIRECTIONAL_DEPTH_BINS;
+                for source_bin in 0..SPATIAL_PRIOR_DEPTH_BINS {
+                    let mut value = 0.0;
+                    for (neighbor, weight) in nearest.iter().zip(weights) {
+                        value += weight
+                            * self.histograms
+                                [Self::index(neighbor.1, x, y, source_bin)];
+                    }
+                    let scene_t = (source_bin as f32 + 0.5) / SPATIAL_PRIOR_DEPTH_BINS as f32;
+                    let offset = (scene_t * 2.0 - 1.0) * self.radius;
+                    let camera_t = ((distance + offset - near) / depth_range).clamp(0.0, 1.0);
+                    let target = camera_t * (DIRECTIONAL_DEPTH_BINS - 1) as f32;
+                    let lo = target.floor() as usize;
+                    let hi = (lo + 1).min(DIRECTIONAL_DEPTH_BINS - 1);
+                    let fraction = target - lo as f32;
+                    output[out_base + lo] += value * (1.0 - fraction);
+                    output[out_base + hi] += value * fraction;
+                }
+            }
+        }
+        output
+    }
+}
+
+impl HighQualitySpatialDirectionalPrior {
+    fn index(view: usize, x: usize, y: usize, depth: usize) -> usize {
+        (((view * HQ_SPATIAL_PRIOR_HEIGHT + y) * HQ_SPATIAL_PRIOR_WIDTH + x)
+            * SPATIAL_PRIOR_DEPTH_BINS)
+            + depth
+    }
+
+    fn bake(splats: &[SplatGpu], center: glam::Vec3, radius: f32) -> Self {
+        let directions = fibonacci_direction_vec(HQ_DIRECTIONAL_VIEW_COUNT);
+        let mut histograms = vec![
+            0.0;
+            HQ_DIRECTIONAL_VIEW_COUNT
+                * HQ_SPATIAL_PRIOR_WIDTH
+                * HQ_SPATIAL_PRIOR_HEIGHT
+                * SPATIAL_PRIOR_DEPTH_BINS
+        ];
+        let tan_half_fov_y = (45.0_f32.to_radians() * 0.5).tan();
+        let tan_half_fov_x = tan_half_fov_y * (16.0 / 9.0);
+        let camera_distance = radius / (45.0_f32.to_radians() * 0.5).sin();
+
+        for (view, direction) in directions.iter().enumerate() {
+            let forward = glam::Vec3::from_array(*direction);
+            let helper = if forward.y.abs() < 0.95 {
+                glam::Vec3::Y
+            } else {
+                glam::Vec3::X
+            };
+            let screen_x = forward.cross(helper).normalize();
+            let screen_y = screen_x.cross(forward).normalize();
+
+            for splat in splats {
+                let p = glam::Vec3::from_slice(&splat.pos_opacity[..3]);
+                let relative = p - center;
+                let view_x = relative.dot(screen_x);
+                let view_y = relative.dot(screen_y);
+                let depth = camera_distance + relative.dot(forward);
+                if depth <= 1e-5 {
+                    continue;
+                }
+
+                let ndc_x = view_x / (depth * tan_half_fov_x);
+                let ndc_y = view_y / (depth * tan_half_fov_y);
+                if !(-1.25..=1.25).contains(&ndc_x) || !(-1.25..=1.25).contains(&ndc_y) {
+                    continue;
+                }
+
+                let covariance = glam::Mat3::from_cols(
+                    glam::Vec3::new(splat.cov_a[0], splat.cov_a[1], splat.cov_a[2]),
+                    glam::Vec3::new(splat.cov_a[1], splat.cov_b[0], splat.cov_b[1]),
+                    glam::Vec3::new(splat.cov_a[2], splat.cov_b[1], splat.cov_b[2]),
+                );
+
+                // Perspective Jacobian in world space, including the depth derivative.
+                let grad_x = screen_x / (depth * tan_half_fov_x)
+                    - forward * (view_x / (depth * depth * tan_half_fov_x));
+                let grad_y = screen_y / (depth * tan_half_fov_y)
+                    - forward * (view_y / (depth * depth * tan_half_fov_y));
+                let ndc_cxx = grad_x.dot(covariance * grad_x).max(0.0);
+                let ndc_cxy = grad_x.dot(covariance * grad_y);
+                let ndc_cyy = grad_y.dot(covariance * grad_y).max(0.0);
+                let ndc_det = (ndc_cxx * ndc_cyy - ndc_cxy * ndc_cxy).max(0.0);
+
+                let sx = HQ_SPATIAL_PRIOR_WIDTH as f32 * 0.5;
+                let sy = -(HQ_SPATIAL_PRIOR_HEIGHT as f32) * 0.5;
+                let center_x = (ndc_x * 0.5 + 0.5) * HQ_SPATIAL_PRIOR_WIDTH as f32 - 0.5;
+                let center_y = (-ndc_y * 0.5 + 0.5) * HQ_SPATIAL_PRIOR_HEIGHT as f32 - 0.5;
+
+                // A half-cell reconstruction footprint prevents sub-cell Gaussians from
+                // disappearing while preserving the actual ellipse for larger splats.
+                let cxx = ndc_cxx * sx * sx + 0.25;
+                let cxy = ndc_cxy * sx * sy;
+                let cyy = ndc_cyy * sy * sy + 0.25;
+                let det = cxx * cyy - cxy * cxy;
+                if det <= 1e-10 {
+                    continue;
+                }
+                let trace_half = 0.5 * (cxx + cyy);
+                let lambda_max = trace_half
+                    + (trace_half * trace_half - det).max(0.0).sqrt();
+                let extent = 3.0 * lambda_max.sqrt();
+                let min_x = (center_x - extent)
+                    .floor()
+                    .clamp(0.0, (HQ_SPATIAL_PRIOR_WIDTH - 1) as f32)
+                    as usize;
+                let max_x = (center_x + extent)
+                    .ceil()
+                    .clamp(0.0, (HQ_SPATIAL_PRIOR_WIDTH - 1) as f32)
+                    as usize;
+                let min_y = (center_y - extent)
+                    .floor()
+                    .clamp(0.0, (HQ_SPATIAL_PRIOR_HEIGHT - 1) as f32)
+                    as usize;
+                let max_y = (center_y + extent)
+                    .ceil()
+                    .clamp(0.0, (HQ_SPATIAL_PRIOR_HEIGHT - 1) as f32)
+                    as usize;
+
+                let inv_xx = cyy / det;
+                let inv_xy = -cxy / det;
+                let inv_yy = cxx / det;
+                let mut kernel_sum = 0.0;
+                for y in min_y..=max_y {
+                    for x in min_x..=max_x {
+                        let dx = x as f32 - center_x;
+                        let dy = y as f32 - center_y;
+                        let power = -0.5
+                            * (inv_xx * dx * dx + 2.0 * inv_xy * dx * dy + inv_yy * dy * dy);
+                        if power >= -4.5 {
+                            kernel_sum += power.exp();
+                        }
+                    }
+                }
+                if kernel_sum <= 0.0 {
+                    continue;
+                }
+
+                let opacity = splat.pos_opacity[3].clamp(0.0, 1.0 - 1e-6);
+                let optical_depth = -(1.0 - opacity).ln();
+                let total_weight = optical_depth * ndc_det.sqrt().max(1e-10);
+                let relative_depth =
+                    (0.5 + relative.dot(forward) / (2.0 * radius)).clamp(0.0, 1.0);
+                let depth_bin = ((relative_depth * SPATIAL_PRIOR_DEPTH_BINS as f32) as usize)
+                    .min(SPATIAL_PRIOR_DEPTH_BINS - 1);
+
+                for y in min_y..=max_y {
+                    for x in min_x..=max_x {
+                        let dx = x as f32 - center_x;
+                        let dy = y as f32 - center_y;
+                        let power = -0.5
+                            * (inv_xx * dx * dx + 2.0 * inv_xy * dx * dy + inv_yy * dy * dy);
+                        if power >= -4.5 {
+                            histograms[Self::index(view, x, y, depth_bin)] +=
+                                total_weight * power.exp() / kernel_sum;
+                        }
+                    }
+                }
+            }
+
+            for y in 0..HQ_SPATIAL_PRIOR_HEIGHT {
+                for x in 0..HQ_SPATIAL_PRIOR_WIDTH {
+                    let base = Self::index(view, x, y, 0);
+                    let values = &mut histograms[base..base + SPATIAL_PRIOR_DEPTH_BINS];
+                    let sum: f32 = values.iter().sum();
+                    if sum > 0.0 {
+                        for value in values {
+                            *value /= sum;
+                        }
+                    } else {
+                        values.fill(1.0 / SPATIAL_PRIOR_DEPTH_BINS as f32);
+                    }
+                }
+            }
+        }
+
+        Self {
+            directions,
+            histograms,
+            radius,
+        }
+    }
+
+    pub fn sample_for_camera(
+        &self,
+        forward: glam::Vec3,
+        distance: f32,
+        near: f32,
+        far: f32,
+    ) -> Vec<f32> {
+        let (nearest, weights) = nearest_direction_weights_dynamic(&self.directions, forward);
+        let mut output = vec![
+            0.0;
+            HQ_SPATIAL_PRIOR_WIDTH * HQ_SPATIAL_PRIOR_HEIGHT * DIRECTIONAL_DEPTH_BINS
+        ];
+        let depth_range = (far - near).max(1e-6);
+
+        for y in 0..HQ_SPATIAL_PRIOR_HEIGHT {
+            for x in 0..HQ_SPATIAL_PRIOR_WIDTH {
+                let out_base = (y * HQ_SPATIAL_PRIOR_WIDTH + x) * DIRECTIONAL_DEPTH_BINS;
                 for source_bin in 0..SPATIAL_PRIOR_DEPTH_BINS {
                     let mut value = 0.0;
                     for (neighbor, weight) in nearest.iter().zip(weights) {
