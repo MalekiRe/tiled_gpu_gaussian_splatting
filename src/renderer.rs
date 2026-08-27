@@ -1371,6 +1371,36 @@ impl Renderer {
             pass.draw(0..4, 0..splats.draw_count);
         }
 
+        // Ordered stochastic coverage supplies a front estimate only where the
+        // deterministic alpha core did not produce one.
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("depth sliced fringe fallback prepass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.front_feature_alt_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.front_feature_alt_depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.splat_pipelines.front_feature_alt_pipeline);
+            pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            pass.set_bind_group(1, &splats.bind_group, &[]);
+            pass.draw(0..4, 0..splats.draw_count);
+        }
+
         {
             let color_attachments: [Option<wgpu::RenderPassColorAttachment<'_>>; 4] =
                 std::array::from_fn(|slice| {

@@ -19,6 +19,7 @@ struct HistoParams {
 @group(2) @binding(2) var cdf_sampler: sampler;
 @group(2) @binding(3) var<uniform> histo_params: HistoParams;
 @group(2) @binding(5) var front_feature: texture_2d<f32>;
+@group(2) @binding(6) var front_feature_fallback: texture_2d<f32>;
 
 fn decode_octahedral(encoded: vec2<f32>) -> vec3<f32> {
     let projected = encoded * 2.0 - 1.0;
@@ -58,7 +59,10 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         vec3f(u, v, clamp(normalized_z + 0.5 / f32(histo_params.num_bins), 0.0, 1.0)),
         0.0,
     ).r;
-    let feature = textureLoad(front_feature, vec2<i32>(in.clip_position.xy), 0);
+    let pixel = vec2<i32>(in.clip_position.xy);
+    let primary_feature = textureLoad(front_feature, pixel, 0);
+    let fallback_feature = textureLoad(front_feature_fallback, pixel, 0);
+    let feature = select(fallback_feature, primary_feature, primary_feature.w >= 1.0);
     if (feature.w >= 1.0) {
         let radius_z = max(params.scene_radius / camera.depth_range, 1e-5);
         let depth_delta = normalized_z - feature.z;
