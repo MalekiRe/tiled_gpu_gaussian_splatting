@@ -20,6 +20,12 @@ fn prior_value(x: u32, y: u32, bin: u32) -> f32 {
     return spatial_prior[(y * PRIOR_WIDTH + x) * DEPTH_BINS + bin];
 }
 
+fn prior_chroma(x: u32, y: u32) -> vec2<f32> {
+    let histogram_len = PRIOR_WIDTH * PRIOR_HEIGHT * DEPTH_BINS;
+    let base = histogram_len + (y * PRIOR_WIDTH + x) * 2u;
+    return vec2f(spatial_prior[base], spatial_prior[base + 1u]);
+}
+
 @compute @workgroup_size(64, 1, 1)
 fn main(
     @builtin(workgroup_id) wg: vec3<u32>,
@@ -50,6 +56,9 @@ fn main(
     let top = mix(prior_value(x0, y0, bin), prior_value(x1, y0, bin), fx);
     let bottom = mix(prior_value(x0, y1, bin), prior_value(x1, y1, bin), fx);
     let bin_value = mix(top, bottom, fy);
+    let chroma_top = mix(prior_chroma(x0, y0), prior_chroma(x1, y0), fx);
+    let chroma_bottom = mix(prior_chroma(x0, y1), prior_chroma(x1, y1), fx);
+    let chroma = mix(chroma_top, chroma_bottom, fy);
     buf_a[bin] = bin_value;
     workgroupBarrier();
 
@@ -74,6 +83,10 @@ fn main(
     textureStore(
         cdf_out,
         vec3i(i32(tile_x), i32(tile_y), i32(bin)),
-        vec4f(cdf, select(0.0, bin_value / total, total > 0.0), 0.0, 0.0),
+        vec4f(
+            cdf,
+            select(0.0, bin_value / total, total > 0.0),
+            chroma * 0.5 + vec2f(0.5),
+        ),
     );
 }

@@ -72,6 +72,8 @@ pub struct SpatialDirectionalHistogramPrior {
 pub struct HighQualitySpatialDirectionalPrior {
     directions: Vec<[f32; 3]>,
     histograms: Vec<u8>,
+    /// Co/Cg chroma averaged toward the camera for each [view][tile].
+    front_chroma: Vec<[u8; 2]>,
     radius: f32,
 }
 
@@ -538,6 +540,15 @@ impl HighQualitySpatialDirectionalPrior {
         decode_positive_log4(code)
     }
 
+    fn chroma_value(&self, view: usize, x: usize, y: usize) -> glam::Vec2 {
+        let packed = self.front_chroma
+            [(view * HQ_SPATIAL_PRIOR_HEIGHT + y) * HQ_SPATIAL_PRIOR_WIDTH + x];
+        glam::Vec2::new(
+            packed[0] as f32 * (2.0 / 255.0) - 1.0,
+            packed[1] as f32 * (2.0 / 255.0) - 1.0,
+        )
+    }
+
     fn bake(splats: &[SplatGpu], center: glam::Vec3, radius: f32) -> Self {
         let directions = fibonacci_direction_vec(HQ_DIRECTIONAL_VIEW_COUNT);
         let mut histograms = vec![
@@ -546,6 +557,12 @@ impl HighQualitySpatialDirectionalPrior {
                 * HQ_SPATIAL_PRIOR_WIDTH
                 * HQ_SPATIAL_PRIOR_HEIGHT
                 * SPATIAL_PRIOR_DEPTH_BINS
+        ];
+        let mut front_chroma_accum = vec![
+            [0.0f32; 3];
+            HQ_DIRECTIONAL_VIEW_COUNT
+                * HQ_SPATIAL_PRIOR_WIDTH
+                * HQ_SPATIAL_PRIOR_HEIGHT
         ];
         let tan_half_fov_y = (45.0_f32.to_radians() * 0.5).tan();
         let tan_half_fov_x = tan_half_fov_y * (16.0 / 9.0);
@@ -662,8 +679,23 @@ impl HighQualitySpatialDirectionalPrior {
                         let power = -0.5
                             * (inv_xx * dx * dx + 2.0 * inv_xy * dx * dy + inv_yy * dy * dy);
                         if power >= -4.5 {
-                            histograms[Self::index(view, x, y, depth_bin)] +=
-                                total_weight * power.exp() / kernel_sum;
+                            let cell_weight = total_weight * power.exp() / kernel_sum;
+                            histograms[Self::index(view, x, y, depth_bin)] += cell_weight;
+                            // A soft front bias produces a stable color hint without
+                            // requiring a color payload for every depth bin.
+                            let front_weight = cell_weight * (-8.0 * relative_depth).exp();
+                            let color = glam::Vec3::from_slice(&splat.color[..3]);
+                            let chroma = glam::Vec2::new(
+                                color.x - color.z,
+                                color.y - 0.5 * (color.x + color.z),
+                            );
+                            let chroma_index =
+                                (view * HQ_SPATIAL_PRIOR_HEIGHT + y)
+                                    * HQ_SPATIAL_PRIOR_WIDTH
+                                    + x;
+                            front_chroma_accum[chroma_index][0] += front_weight * chroma.x;
+                            front_chroma_accum[chroma_index][1] += front_weight * chroma.y;
+                            front_chroma_accum[chroma_index][2] += front_weight;
                         }
                     }
                 }
@@ -693,10 +725,25 @@ impl HighQualitySpatialDirectionalPrior {
                 low | (high << 4)
             })
             .collect();
+        let front_chroma = front_chroma_accum
+            .into_iter()
+            .map(|[co, cg, weight]| {
+                let chroma = if weight > 0.0 {
+                    glam::Vec2::new(co, cg) / weight
+                } else {
+                    glam::Vec2::ZERO
+                };
+                [
+                    ((chroma.x.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255.0).round() as u8,
+                    ((chroma.y.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255.0).round() as u8,
+                ]
+            })
+            .collect();
 
         Self {
             directions,
             histograms,
+            front_chroma,
             radius,
         }
     }
@@ -709,9 +756,11 @@ impl HighQualitySpatialDirectionalPrior {
         far: f32,
     ) -> Vec<f32> {
         let (nearest, weights) = nearest_direction_weights_dynamic(&self.directions, forward);
+        let histogram_len =
+            HQ_SPATIAL_PRIOR_WIDTH * HQ_SPATIAL_PRIOR_HEIGHT * DIRECTIONAL_DEPTH_BINS;
         let mut output = vec![
             0.0;
-            HQ_SPATIAL_PRIOR_WIDTH * HQ_SPATIAL_PRIOR_HEIGHT * DIRECTIONAL_DEPTH_BINS
+            histogram_len + HQ_SPATIAL_PRIOR_WIDTH * HQ_SPATIAL_PRIOR_HEIGHT * 2
         ];
         let depth_range = (far - near).max(1e-6);
         let baked_distance = self.radius / (45.0_f32.to_radians() * 0.5).sin();
@@ -766,6 +815,46 @@ impl HighQualitySpatialDirectionalPrior {
                     output[out_base + lo] += value * (1.0 - fraction);
                     output[out_base + hi] += value * fraction;
                 }
+            }
+        }
+        // Chroma is a screen-tile moment rather than a depth volume. Reproject
+        // it at the scene centre, then use the same directional interpolation.
+        let projection_scale = distance / baked_distance.max(1e-5);
+        for y in 0..HQ_SPATIAL_PRIOR_HEIGHT {
+            for x in 0..HQ_SPATIAL_PRIOR_WIDTH {
+                let source_x = (((x as f32 + 0.5)
+                    - HQ_SPATIAL_PRIOR_WIDTH as f32 * 0.5)
+                    * projection_scale
+                    + HQ_SPATIAL_PRIOR_WIDTH as f32 * 0.5
+                    - 0.5)
+                    .clamp(0.0, (HQ_SPATIAL_PRIOR_WIDTH - 1) as f32);
+                let source_y = (((y as f32 + 0.5)
+                    - HQ_SPATIAL_PRIOR_HEIGHT as f32 * 0.5)
+                    * projection_scale
+                    + HQ_SPATIAL_PRIOR_HEIGHT as f32 * 0.5
+                    - 0.5)
+                    .clamp(0.0, (HQ_SPATIAL_PRIOR_HEIGHT - 1) as f32);
+                let x0 = source_x.floor() as usize;
+                let y0 = source_y.floor() as usize;
+                let x1 = (x0 + 1).min(HQ_SPATIAL_PRIOR_WIDTH - 1);
+                let y1 = (y0 + 1).min(HQ_SPATIAL_PRIOR_HEIGHT - 1);
+                let fx = source_x - x0 as f32;
+                let fy = source_y - y0 as f32;
+                let mut chroma = glam::Vec2::ZERO;
+                for (neighbor, weight) in nearest.iter().zip(weights) {
+                    let top = self.chroma_value(neighbor.1, x0, y0).lerp(
+                        self.chroma_value(neighbor.1, x1, y0),
+                        fx,
+                    );
+                    let bottom = self.chroma_value(neighbor.1, x0, y1).lerp(
+                        self.chroma_value(neighbor.1, x1, y1),
+                        fx,
+                    );
+                    chroma += weight * top.lerp(bottom, fy);
+                }
+                let chroma_base = histogram_len + (y * HQ_SPATIAL_PRIOR_WIDTH + x) * 2;
+                output[chroma_base] = chroma.x;
+                output[chroma_base + 1] = chroma.y;
             }
         }
         output

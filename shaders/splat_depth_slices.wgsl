@@ -130,6 +130,20 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         var front_depth = feature.z;
         var front_luminance = select(fallback_luminance, primary_payload.x, primary_valid);
         var front_color = fallback_color;
+        if (primary_valid && !fallback_valid) {
+            // Recombine the primary's precise luminance with the coarse baked
+            // Co/Cg tile moment carried in the CDF's otherwise-unused channels.
+            let baked_chroma = cdf_center.ba * 2.0 - vec2f(1.0);
+            front_color = clamp(
+                vec3f(
+                    front_luminance + 0.4298 * baked_chroma.x - 0.7152 * baked_chroma.y,
+                    front_luminance - 0.0702 * baked_chroma.x + 0.2848 * baked_chroma.y,
+                    front_luminance - 0.5702 * baked_chroma.x - 0.7152 * baked_chroma.y,
+                ),
+                vec3f(0.0),
+                vec3f(1.0),
+            );
+        }
         let front_depth_sigma = select(0.0, primary_payload.y * radius_z, primary_valid);
         var front_normal = decode_octahedral(feature.xy);
         if (primary_valid && fallback_valid) {
@@ -263,11 +277,12 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         let raw_color_gate = exp(
             -4.0 * dot(in.color - front_color, in.color - front_color),
         );
-        let color_gate = select(
-            1.0,
-            mix(1.0, raw_color_gate, 0.5 * observation_confidence),
+        let color_gate_strength = select(
+            0.15,
+            0.5 * observation_confidence,
             fallback_valid,
         );
+        let color_gate = mix(1.0, raw_color_gate, color_gate_strength);
         let appearance_agreement = normal_gate * luminance_gate * color_gate;
         let front_band = 1.0 - smoothstep(
             0.0,

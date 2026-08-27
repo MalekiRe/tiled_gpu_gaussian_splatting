@@ -323,7 +323,7 @@ impl Renderer {
             label: Some("directional histogram prior buffer"),
             size: (HQ_SPATIAL_PRIOR_WIDTH
                 * HQ_SPATIAL_PRIOR_HEIGHT
-                * DIRECTIONAL_DEPTH_BINS
+                * (DIRECTIONAL_DEPTH_BINS + 2)
                 * std::mem::size_of::<f32>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
