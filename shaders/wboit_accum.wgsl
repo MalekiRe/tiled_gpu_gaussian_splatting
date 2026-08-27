@@ -19,7 +19,7 @@ fn fs_main(in: VertexOutput) -> WboitOutput {
     let linear_z = 1.0 / in.clip_position.w;
 
     // Normalize to [0, 1] using camera near/far planes
-    let d = clamp((linear_z - camera.near) / (camera.far - camera.near), 0.0, 1.0);
+    let d = clamp((linear_z - camera.depth_min) / camera.depth_range, 0.0, 1.0);
 
     // Exponential weight spanning the usable f16 accumulation range (~7.8 orders of magnitude)
     // d=0 (near) → 2^13 = 8192, d=1 (far) → 2^-13 ≈ 1.2e-4
@@ -28,6 +28,6 @@ fn fs_main(in: VertexOutput) -> WboitOutput {
 
     var out: WboitOutput;
     out.accum = vec4<f32>(lit.rgb * alpha * w, alpha * w);
-    out.revealage = alpha;
+    out.revealage = -log(max(1.0 - alpha, 1e-6));
     return out;
 }

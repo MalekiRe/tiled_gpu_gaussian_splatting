@@ -3,13 +3,13 @@ use crate::vertex::Vertex;
 pub struct HistogramWboitPipeline {
     pub accum_pipeline: wgpu::RenderPipeline,
     pub composite_pipeline: wgpu::RenderPipeline,
+    pub filtered_composite_pipeline: wgpu::RenderPipeline,
     pub cdf_build_pipeline: wgpu::ComputePipeline,
     pub spatial_cdf_build_pipeline: wgpu::ComputePipeline,
     pub high_quality_spatial_cdf_build_pipeline: wgpu::ComputePipeline,
     pub histo_accum_bgl: wgpu::BindGroupLayout,
     pub histo_composite_tex_bgl: wgpu::BindGroupLayout,
     pub cdf_build_bgl: wgpu::BindGroupLayout,
-    pub flag_bgl: wgpu::BindGroupLayout,
 }
 
 impl HistogramWboitPipeline {
@@ -179,20 +179,6 @@ impl HistogramWboitPipeline {
             ],
         });
 
-        let flag_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("histo flag bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-
         let accum_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("histo_accum pipeline layout"),
             bind_group_layouts: &[camera_bgl, object_bgl, &histo_accum_bgl],
@@ -201,7 +187,7 @@ impl HistogramWboitPipeline {
 
         let composite_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("histo composite pipeline layout"),
-            bind_group_layouts: &[&histo_composite_tex_bgl, &flag_bgl],
+            bind_group_layouts: &[&histo_composite_tex_bgl],
             immediate_size: 0,
         });
 
@@ -215,6 +201,7 @@ impl HistogramWboitPipeline {
         let common_wgsl = include_str!("../../shaders/common.wgsl");
         let accum_wgsl = include_str!("../../shaders/histo_accum.wgsl");
         let composite_wgsl = include_str!("../../shaders/histo_composite.wgsl");
+        let filtered_composite_wgsl = include_str!("../../shaders/histo_composite_filtered.wgsl");
         let cdf_build_wgsl = include_str!("../../shaders/histo_cdf_build.wgsl");
         let spatial_cdf_build_wgsl = include_str!("../../shaders/spatial_cdf_build.wgsl");
 
@@ -226,6 +213,15 @@ impl HistogramWboitPipeline {
             &format!("{}\n{}", common_wgsl, accum_wgsl),
             composite_wgsl,
             "histo",
+        );
+        let (_, filtered_composite_pipeline) = create_pipeline_pair(
+            device,
+            surface_format,
+            &accum_layout,
+            &composite_layout,
+            &format!("{}\n{}", common_wgsl, accum_wgsl),
+            filtered_composite_wgsl,
+            "histo filtered",
         );
 
         let cdf_build_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -277,13 +273,13 @@ impl HistogramWboitPipeline {
         Self {
             accum_pipeline,
             composite_pipeline,
+            filtered_composite_pipeline,
             cdf_build_pipeline,
             spatial_cdf_build_pipeline,
             high_quality_spatial_cdf_build_pipeline,
             histo_accum_bgl,
             histo_composite_tex_bgl,
             cdf_build_bgl,
-            flag_bgl,
         }
     }
 }
@@ -332,16 +328,16 @@ fn create_pipeline_pair(
                     write_mask: wgpu::ColorWrites::ALL,
                 }),
                 Some(wgpu::ColorTargetState {
-                    format: wgpu::TextureFormat::R8Unorm,
+                    format: wgpu::TextureFormat::R16Float,
                     blend: Some(wgpu::BlendState {
                         color: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::Zero,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
                             operation: wgpu::BlendOperation::Add,
                         },
                         alpha: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::Zero,
-                            dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
                             operation: wgpu::BlendOperation::Add,
                         },
                     }),

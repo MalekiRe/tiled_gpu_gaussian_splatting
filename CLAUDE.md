@@ -307,6 +307,8 @@ sorts the newest camera). At orbit speeds the one-frame lag is not visible.
   - `glam::Mat4::perspective_rh()` for projection
   - `glam::Mat4::look_at_rh()` for view
   - Spherical coords: `eye = target + distance * vec3(cos(pitch)*sin(yaw), sin(pitch), cos(pitch)*cos(yaw))`
+  - OIT depth normalization uses the tight scene window `[distance-radius, distance+radius]`;
+    projection clipping continues to use the wider near/far planes.
 - **Background**: Dark gray (0.1, 0.1, 0.1) clear color (set in each render pass in `src/renderer.rs`)
 
 ## Controls
@@ -320,7 +322,6 @@ sorts the newest camera). At orbit speeds the one-frame lag is not visible.
   runs two independent front-feature samples and trusts their suppression signal in proportion
   to their depth and normal agreement.
 - `M`: Toggle mesh visibility (toggles `scene.show_meshes`)
-- `A`: Toggle revealage vs. the `exp(-accum.a)` approximation
 - `C`: (3DGS only) Cycle the render cap: 100% / 50% / 25% / 10% of the scene
 - `[` / `]`: (3DGS only) Shrink / grow splats, for dialling overdraw up and down
 - `R`: Reset the camera to its framing of the loaded scene

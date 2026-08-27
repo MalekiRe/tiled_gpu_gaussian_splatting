@@ -49,7 +49,8 @@ fn main(
 
     let top = mix(prior_value(x0, y0, bin), prior_value(x1, y0, bin), fx);
     let bottom = mix(prior_value(x0, y1, bin), prior_value(x1, y1, bin), fx);
-    buf_a[bin] = mix(top, bottom, fy);
+    let bin_value = mix(top, bottom, fy);
+    buf_a[bin] = bin_value;
     workgroupBarrier();
 
     if (bin >= 1u) { buf_b[bin] = buf_a[bin] + buf_a[bin - 1u]; } else { buf_b[bin] = buf_a[bin]; }
@@ -66,9 +67,9 @@ fn main(
     workgroupBarrier();
 
     let total = buf_a[DEPTH_BINS - 1u];
-    var cdf = f32(bin + 1u) / f32(DEPTH_BINS);
+    var cdf = f32(bin) / f32(DEPTH_BINS);
     if (total > 0.0) {
-        cdf = buf_a[bin] / total;
+        cdf = (buf_a[bin] - bin_value) / total;
     }
     textureStore(
         cdf_out,

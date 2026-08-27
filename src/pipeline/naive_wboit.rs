@@ -4,7 +4,6 @@ pub struct NaiveWboitPipeline {
     pub accum_pipeline: wgpu::RenderPipeline,
     pub composite_pipeline: wgpu::RenderPipeline,
     pub composite_bgl: wgpu::BindGroupLayout,
-    pub flag_bgl: wgpu::BindGroupLayout,
 }
 
 impl NaiveWboitPipeline {
@@ -60,18 +59,19 @@ impl NaiveWboitPipeline {
                         }),
                         write_mask: wgpu::ColorWrites::ALL,
                     }),
-                    // revealage (R8Unorm, multiplicative: Zero, OneMinusSrc)
+                    // Optical depth (R16Float, additive). This is mathematically
+                    // equivalent to revealage but remains precise under heavy overdraw.
                     Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::R8Unorm,
+                        format: wgpu::TextureFormat::R16Float,
                         blend: Some(wgpu::BlendState {
                             color: wgpu::BlendComponent {
-                                src_factor: wgpu::BlendFactor::Zero,
-                                dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                                src_factor: wgpu::BlendFactor::One,
+                                dst_factor: wgpu::BlendFactor::One,
                                 operation: wgpu::BlendOperation::Add,
                             },
                             alpha: wgpu::BlendComponent {
-                                src_factor: wgpu::BlendFactor::Zero,
-                                dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                                src_factor: wgpu::BlendFactor::One,
+                                dst_factor: wgpu::BlendFactor::One,
                                 operation: wgpu::BlendOperation::Add,
                             },
                         }),
@@ -131,23 +131,9 @@ impl NaiveWboitPipeline {
             ],
         });
 
-        let flag_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("wboit flag bgl"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-
         let composite_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("wboit composite pipeline layout"),
-            bind_group_layouts: &[&composite_bgl, &flag_bgl],
+            bind_group_layouts: &[&composite_bgl],
             immediate_size: 0,
         });
 
@@ -185,7 +171,6 @@ impl NaiveWboitPipeline {
             accum_pipeline,
             composite_pipeline,
             composite_bgl,
-            flag_bgl,
         }
     }
 }

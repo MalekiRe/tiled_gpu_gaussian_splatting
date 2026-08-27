@@ -64,8 +64,9 @@ fn main(
         mix_factor = clamp(prior_params.mix_factor, 0.0, 1.0);
     }
     let prior_scale = max(live_total, 1.0);
-    buf_a[bin] = val * (1.0 - mix_factor)
+    let bin_od = val * (1.0 - mix_factor)
         + directional_prior[bin] * prior_scale * mix_factor;
+    buf_a[bin] = bin_od;
     workgroupBarrier();
 
     // Hillis-Steele inclusive prefix sum (6 steps for 64 bins)
@@ -88,15 +89,17 @@ fn main(
     if (bin >= 32u) { buf_a[bin] = buf_b[bin] + buf_b[bin - 32u]; } else { buf_a[bin] = buf_b[bin]; }
     workgroupBarrier();
 
-    // buf_a now has inclusive prefix sum
+    // Store the optical depth strictly in front of this bin. Texture filtering then
+    // interpolates continuously between true bin edges rather than counting the current
+    // fragment's entire bin against itself.
     if (bin < nb) {
         let total_od = buf_a[nb - 1u];
         var cdf_val: f32;
         if (total_od > 0.0) {
-            cdf_val = buf_a[bin] / total_od;
+            cdf_val = (buf_a[bin] - bin_od) / total_od;
         } else {
             // Linear fallback when no fragments hit this tile
-            cdf_val = f32(bin + 1u) / f32(nb);
+            cdf_val = f32(bin) / f32(nb);
         }
 
         textureStore(cdf_out, vec3i(i32(tile_x), i32(tile_y), i32(bin)), vec4f(cdf_val, 0.0, 0.0, 0.0));

@@ -41,7 +41,7 @@ fn fs_main(in: SplatVsOut) -> WboitOutput {
 
     let linear_z = 1.0 / in.clip_position.w;
     let normalized_z = clamp(
-        (linear_z - camera.near) / (camera.far - camera.near),
+        (linear_z - camera.depth_min) / camera.depth_range,
         0.0,
         1.0,
     );
@@ -60,13 +60,14 @@ fn fs_main(in: SplatVsOut) -> WboitOutput {
     // Trilinear sampling of the CDF volume gives spatial and depth interpolation for free.
     let u = in.clip_position.x / f32(histo_params.tile_count_x * TILE_SIZE);
     let v = in.clip_position.y / f32(histo_params.tile_count_y * TILE_SIZE);
-    let equalized_z = textureSampleLevel(cdf_texture, cdf_sampler, vec3f(u, v, normalized_z), 0.0).r;
+    let cdf_z = clamp(normalized_z + 0.5 / f32(nb), 0.0, 1.0);
+    let equalized_z = textureSampleLevel(cdf_texture, cdf_sampler, vec3f(u, v, cdf_z), 0.0).r;
 
-    let prev_r = textureLoad(prev_revealage_tex, vec2<i32>(in.clip_position.xy), 0).r;
-    let wt = pow(max(prev_r, 1e-4), equalized_z);
+    let prev_tau = textureLoad(prev_revealage_tex, vec2<i32>(in.clip_position.xy), 0).r;
+    let wt = exp(-prev_tau * equalized_z);
 
     var out: WboitOutput;
     out.accum = vec4<f32>(in.color * alpha * wt, alpha * wt);
-    out.revealage = alpha;
+    out.revealage = optical_depth;
     return out;
 }

@@ -47,7 +47,9 @@ pub struct CameraUniform {
     /// Focal length in pixels, used to project the covariance to screen space.
     pub focal: [f32; 2],
     pub viewport: [f32; 2],
-    pub _padding0: [f32; 2],
+    /// Tight scene-relative eye-space depth window used only for OIT weighting/histograms.
+    pub depth_min: f32,
+    pub depth_range: f32,
     /// World-space eye position, for view-dependent SH evaluation.
     pub cam_pos: [f32; 3],
     pub _padding1: f32,

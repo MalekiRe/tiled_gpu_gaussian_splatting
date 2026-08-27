@@ -834,6 +834,23 @@ impl Sorter {
     }
 }
 
+/// Deterministic full-precision back-to-front order for benchmark reference images.
+/// The interactive sorter uses a faster quantized counting sort; benchmarking pays the
+/// one-time `O(n log n)` cost so sort quantization is not folded into the measured error.
+pub fn exact_back_to_front_order(
+    positions: &[[f32; 3]],
+    forward: glam::Vec3,
+    count: usize,
+) -> Vec<u32> {
+    let mut order: Vec<u32> = (0..count.min(positions.len()) as u32).collect();
+    order.sort_unstable_by(|&a, &b| {
+        let a = glam::Vec3::from_array(positions[a as usize]).dot(forward);
+        let b = glam::Vec3::from_array(positions[b as usize]).dot(forward);
+        b.partial_cmp(&a).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    order
+}
+
 fn counting_sort(
     positions: &[[f32; 3]],
     req: &SortRequest,

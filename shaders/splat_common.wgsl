@@ -14,6 +14,8 @@ struct Camera {
     far: f32,
     focal: vec2<f32>,
     viewport: vec2<f32>,
+    depth_min: f32,
+    depth_range: f32,
     cam_pos: vec3<f32>,
 };
 

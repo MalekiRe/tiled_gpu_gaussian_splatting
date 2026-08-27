@@ -38,7 +38,7 @@ fn fs_main(in: SplatVsOut) -> WboitOutput {
 
     let linear_z = 1.0 / in.clip_position.w;
     let normalized_z = clamp(
-        (linear_z - camera.near) / (camera.far - camera.near),
+        (linear_z - camera.depth_min) / camera.depth_range,
         0.0,
         1.0,
     );
@@ -50,7 +50,7 @@ fn fs_main(in: SplatVsOut) -> WboitOutput {
 
     // Only change fragments meaningfully behind the stochastic front. Depth thresholds
     // scale with the object rather than the camera's absolute clip range.
-    let radius_z = max(params.scene_radius / (camera.far - camera.near), 1e-5);
+    let radius_z = max(params.scene_radius / camera.depth_range, 1e-5);
     let thickness = 0.035 * radius_z;
     let softness = max(0.20 * radius_z, 1e-5);
     let behind = smoothstep(0.0, thickness * 2.0, max(depth_delta, 0.0));
@@ -73,15 +73,15 @@ fn fs_main(in: SplatVsOut) -> WboitOutput {
     let equalized_z = textureSampleLevel(
         cdf_texture,
         cdf_sampler,
-        vec3f(u, v, normalized_z),
+        vec3f(u, v, clamp(normalized_z + 0.5 / f32(histo_params.num_bins), 0.0, 1.0)),
         0.0,
     ).r;
 
-    let prev_r = textureLoad(prev_revealage_tex, pixel, 0).r;
-    let wt = pow(max(prev_r, 1e-4), equalized_z);
+    let prev_tau = textureLoad(prev_revealage_tex, pixel, 0).r;
+    let wt = exp(-prev_tau * equalized_z);
 
     var out: WboitOutput;
     out.accum = vec4<f32>(in.color * effective_alpha * wt, effective_alpha * wt);
-    out.revealage = effective_alpha;
+    out.revealage = -log(max(1.0 - effective_alpha, 1e-6));
     return out;
 }

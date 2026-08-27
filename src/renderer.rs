@@ -1,5 +1,6 @@
 use crate::camera::Camera;
 use crate::pipeline::alpha_blend::AlphaBlendPipeline;
+use crate::pipeline::depth_sliced::DepthSlicedPipeline;
 use crate::pipeline::histogram_wboit::HistogramWboitPipeline;
 use crate::pipeline::naive_wboit::NaiveWboitPipeline;
 use crate::pipeline::splat::SplatPipelines;
@@ -25,6 +26,7 @@ pub enum RenderMode {
     SpatialBakedHistogramWboit = 5,
     HighQualitySpatialBakedWboit = 6,
     DoubleSampleFrontWboit = 7,
+    DepthSlicedOit = 8,
 }
 
 impl RenderMode {
@@ -45,6 +47,7 @@ impl RenderMode {
             RenderMode::DoubleSampleFrontWboit => {
                 "HQ Front Feature + Two-Sample Confidence"
             }
+            RenderMode::DepthSlicedOit => "Four-Slice Optical-Depth OIT",
         }
     }
 }
@@ -77,7 +80,6 @@ pub struct Renderer {
     pub surface: wgpu::Surface<'static>,
     pub surface_config: wgpu::SurfaceConfiguration,
     pub mode: RenderMode,
-    pub use_revealage: bool,
 
     // Shared resources
     camera_buffer: wgpu::Buffer,
@@ -89,6 +91,7 @@ pub struct Renderer {
     alpha_blend: AlphaBlendPipeline,
     naive_wboit: NaiveWboitPipeline,
     histogram_wboit: HistogramWboitPipeline,
+    depth_sliced: DepthSlicedPipeline,
     splat_pipelines: SplatPipelines,
 
     /// Present only when a PLY was supplied on the command line; when it is, splats
@@ -102,6 +105,8 @@ pub struct Renderer {
     front_feature_depth_view: wgpu::TextureView,
     front_feature_alt_view: wgpu::TextureView,
     front_feature_alt_depth_view: wgpu::TextureView,
+    depth_slice_views: [wgpu::TextureView; 4],
+    depth_slice_composite_bind_group: wgpu::BindGroup,
     frame_index: usize,
 
     // Double-buffered bind groups indexed by frame_index:
@@ -110,17 +115,12 @@ pub struct Renderer {
     histo_accum_bind_groups: [wgpu::BindGroup; 2],
     histo_composite_tex_bind_groups: [wgpu::BindGroup; 2],
 
-    // Revealage flag uniform
-    revealage_flag_buffer: wgpu::Buffer,
-    naive_revealage_bind_group: wgpu::BindGroup,
-
     // Histogram WBOIT resources (tiled)
     histogram_buffer: wgpu::Buffer,
     cdf_texture_view: wgpu::TextureView,
     cdf_sampler: wgpu::Sampler,
     histo_params_buffer: wgpu::Buffer,
     cdf_build_bind_group: wgpu::BindGroup,
-    histo_composite_flag_bind_group: wgpu::BindGroup,
     histo_params: HistogramParams,
     directional_prior: Option<DirectionalHistogramPrior>,
     spatial_directional_prior: Option<SpatialDirectionalHistogramPrior>,
@@ -250,20 +250,13 @@ impl Renderer {
             NaiveWboitPipeline::new(&device, surface_format, &camera_bgl, &object_bgl);
         let histogram_wboit =
             HistogramWboitPipeline::new(&device, surface_format, &camera_bgl, &object_bgl);
+        let depth_sliced = DepthSlicedPipeline::new(&device, surface_format);
         let splat_pipelines = SplatPipelines::new(
             &device,
             surface_format,
             &camera_bgl,
             &histogram_wboit.histo_accum_bgl,
         );
-
-        // Revealage flag buffer (u32: 0 = use exp approximation, 1 = use revealage)
-        let revealage_flag_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("revealage flag buffer"),
-            size: 4,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
 
         // Depth texture
         let depth_texture_view =
@@ -283,6 +276,13 @@ impl Renderer {
                 surface_config.width,
                 surface_config.height,
             );
+        let depth_slice_views = create_depth_slice_textures(
+            &device,
+            surface_config.width,
+            surface_config.height,
+        );
+        let depth_slice_composite_bind_group =
+            create_depth_slice_bind_group(&device, &depth_sliced.composite_bgl, &depth_slice_views);
 
         let wboit_composite_bind_groups = std::array::from_fn(|i| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -299,15 +299,6 @@ impl Renderer {
                     },
                 ],
             })
-        });
-
-        let naive_revealage_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("naive revealage flag bg"),
-            layout: &naive_wboit.flag_bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: revealage_flag_buffer.as_entire_binding(),
-            }],
         });
 
         // Tiled histogram resources
@@ -466,23 +457,12 @@ impl Renderer {
             ],
         });
 
-        let histo_composite_flag_bind_group =
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("histo composite flag bg"),
-                layout: &histogram_wboit.flag_bgl,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: revealage_flag_buffer.as_entire_binding(),
-                }],
-            });
-
         Self {
             device,
             queue,
             surface,
             surface_config,
-            mode: RenderMode::AlphaBlend,
-            use_revealage: true,
+            mode: RenderMode::DepthSlicedOit,
             camera_buffer,
             camera_bind_group,
             depth_texture_view,
@@ -490,6 +470,7 @@ impl Renderer {
             alpha_blend,
             naive_wboit,
             histogram_wboit,
+            depth_sliced,
             splat_pipelines,
             splats: None,
             accum_texture_view,
@@ -498,18 +479,17 @@ impl Renderer {
             front_feature_depth_view,
             front_feature_alt_view,
             front_feature_alt_depth_view,
+            depth_slice_views,
+            depth_slice_composite_bind_group,
             frame_index: 0,
             wboit_composite_bind_groups,
             histo_accum_bind_groups,
             histo_composite_tex_bind_groups,
-            revealage_flag_buffer,
-            naive_revealage_bind_group,
             histogram_buffer,
             cdf_texture_view,
             cdf_sampler,
             histo_params_buffer,
             cdf_build_bind_group,
-            histo_composite_flag_bind_group,
             histo_params,
             directional_prior: None,
             spatial_directional_prior: None,
@@ -659,6 +639,7 @@ impl Renderer {
                 RenderMode::DoubleSampleFrontWboit => {
                     &self.splat_pipelines.double_front_histo_pipeline
                 }
+                RenderMode::DepthSlicedOit => &self.splat_pipelines.depth_sliced_pipeline,
             };
             pass.set_pipeline(pipeline);
             pass.set_bind_group(1, &sp.bind_group, &[]);
@@ -685,6 +666,7 @@ impl Renderer {
             RenderMode::SpatialBakedHistogramWboit => &self.histogram_wboit.accum_pipeline,
             RenderMode::HighQualitySpatialBakedWboit => &self.histogram_wboit.accum_pipeline,
             RenderMode::DoubleSampleFrontWboit => &self.histogram_wboit.accum_pipeline,
+            RenderMode::DepthSlicedOit => &self.naive_wboit.accum_pipeline,
         };
         pass.set_pipeline(pipeline);
         if matches!(
@@ -774,6 +756,12 @@ impl Renderer {
             create_front_feature_textures(&self.device, width, height);
         self.front_feature_alt_view = front_feature_alt_view;
         self.front_feature_alt_depth_view = front_feature_alt_depth_view;
+        self.depth_slice_views = create_depth_slice_textures(&self.device, width, height);
+        self.depth_slice_composite_bind_group = create_depth_slice_bind_group(
+            &self.device,
+            &self.depth_sliced.composite_bgl,
+            &self.depth_slice_views,
+        );
 
         // Recreate double-buffered bind groups
         self.wboit_composite_bind_groups = std::array::from_fn(|i| {
@@ -907,11 +895,13 @@ impl Renderer {
             });
     }
 
-    pub fn render(&mut self, camera: &Camera, scene: &Scene) {
+    fn prepare_frame(&mut self, camera: &Camera, scene: &Scene) -> Vec<usize> {
         // Update camera
         let cam_uniform = camera.uniform();
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&cam_uniform));
+        let (depth_min, depth_range) = camera.depth_window();
+        let depth_max = depth_min + depth_range;
 
         let use_directional_prior =
             self.mode == RenderMode::DirectionalHistogramWboit && self.directional_prior.is_some();
@@ -919,8 +909,8 @@ impl Renderer {
             let prior = self.directional_prior.as_ref().unwrap().sample_for_camera(
                 camera.forward(),
                 camera.distance,
-                camera.near,
-                camera.far,
+                depth_min,
+                depth_max,
             );
             self.queue.write_buffer(
                 &self.directional_prior_buffer,
@@ -938,8 +928,8 @@ impl Renderer {
                 .sample_for_camera(
                     camera.forward(),
                     camera.distance,
-                    camera.near,
-                    camera.far,
+                    depth_min,
+                    depth_max,
                 );
             self.queue.write_buffer(
                 &self.directional_prior_buffer,
@@ -949,7 +939,9 @@ impl Renderer {
         }
         let use_high_quality_spatial_prior = matches!(
             self.mode,
-            RenderMode::HighQualitySpatialBakedWboit | RenderMode::DoubleSampleFrontWboit
+            RenderMode::HighQualitySpatialBakedWboit
+                | RenderMode::DoubleSampleFrontWboit
+                | RenderMode::DepthSlicedOit
         ) && self.high_quality_spatial_prior.is_some();
         if use_high_quality_spatial_prior {
             let prior = self
@@ -959,8 +951,8 @@ impl Renderer {
                 .sample_for_camera(
                     camera.forward(),
                     camera.distance,
-                    camera.near,
-                    camera.far,
+                    depth_min,
+                    depth_max,
                 );
             self.queue.write_buffer(
                 &self.directional_prior_buffer,
@@ -977,11 +969,6 @@ impl Renderer {
                 _padding: [0; 2],
             }),
         );
-
-        // Update revealage flag
-        let flag: u32 = if self.use_revealage { 1 } else { 0 };
-        self.queue
-            .write_buffer(&self.revealage_flag_buffer, 0, bytemuck::bytes_of(&flag));
 
         if let Some(sp) = &self.splats {
             let params = SplatParams {
@@ -1039,6 +1026,46 @@ impl Renderer {
             );
         }
 
+        visible
+    }
+
+    fn encode_frame(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        visible: &[usize],
+    ) {
+        match self.mode {
+            RenderMode::AlphaBlend => self.render_alpha_blend(encoder, view, visible),
+            RenderMode::NaiveWboit => self.render_naive_wboit(encoder, view, visible),
+            RenderMode::HistogramWboit | RenderMode::DirectionalHistogramWboit => {
+                self.render_histogram_wboit(encoder, view, visible, 0)
+            }
+            RenderMode::SpatialBakedHistogramWboit => self.render_histogram_wboit(
+                encoder,
+                view,
+                visible,
+                if self.splats.is_some() { 1 } else { 0 },
+            ),
+            RenderMode::HighQualitySpatialBakedWboit => self.render_histogram_wboit(
+                encoder,
+                view,
+                visible,
+                if self.splats.is_some() { 2 } else { 0 },
+            ),
+            RenderMode::DoubleSampleFrontWboit => self.render_histogram_wboit(
+                encoder,
+                view,
+                visible,
+                if self.splats.is_some() { 3 } else { 0 },
+            ),
+            RenderMode::DepthSlicedOit => self.render_depth_sliced(encoder, view),
+        }
+    }
+
+    pub fn render(&mut self, camera: &Camera, scene: &Scene) {
+        let visible = self.prepare_frame(camera, scene);
+
         let output = match self.surface.get_current_texture() {
             Ok(t) => t,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -1061,50 +1088,122 @@ impl Renderer {
                 label: Some("render encoder"),
             });
 
-        match self.mode {
-            RenderMode::AlphaBlend => {
-                self.render_alpha_blend(&mut encoder, &view, &visible);
-            }
-            RenderMode::NaiveWboit => {
-                self.render_naive_wboit(&mut encoder, &view, &visible);
-            }
-            RenderMode::HistogramWboit => {
-                self.render_histogram_wboit(&mut encoder, &view, &visible, 0);
-            }
-            RenderMode::DirectionalHistogramWboit => {
-                self.render_histogram_wboit(&mut encoder, &view, &visible, 0);
-            }
-            RenderMode::SpatialBakedHistogramWboit => {
-                self.render_histogram_wboit(
-                    &mut encoder,
-                    &view,
-                    &visible,
-                    if self.splats.is_some() { 1 } else { 0 },
-                );
-            }
-            RenderMode::HighQualitySpatialBakedWboit => {
-                self.render_histogram_wboit(
-                    &mut encoder,
-                    &view,
-                    &visible,
-                    if self.splats.is_some() { 2 } else { 0 },
-                );
-            }
-            RenderMode::DoubleSampleFrontWboit => {
-                self.render_histogram_wboit(
-                    &mut encoder,
-                    &view,
-                    &visible,
-                    if self.splats.is_some() { 3 } else { 0 },
-                );
-            }
-        }
+        self.encode_frame(&mut encoder, &view, &visible);
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
         // Flip double buffer index
         self.frame_index = 1 - self.frame_index;
+    }
+
+    /// Render into a copyable offscreen target and return linear premultiplied RGBA.
+    /// This deliberately shares the exact pipelines and intermediate attachments used by
+    /// the interactive renderer; only the final presentation target is replaced.
+    pub fn capture_linear_rgba(&mut self, camera: &Camera, scene: &Scene) -> Vec<[f32; 4]> {
+        let visible = self.prepare_frame(camera, scene);
+        let width = self.surface_config.width;
+        let height = self.surface_config.height;
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("benchmark output"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.surface_config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let unpadded_bytes_per_row = width * 4;
+        let bytes_per_row = unpadded_bytes_per_row.div_ceil(256) * 256;
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("benchmark readback"),
+            size: bytes_per_row as u64 * height as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("benchmark render encoder"),
+            });
+        self.encode_frame(&mut encoder, &view, &visible);
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit(std::iter::once(encoder.finish()));
+        self.frame_index = 1 - self.frame_index;
+
+        let slice = readback.slice(..);
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        self.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("benchmark GPU wait failed");
+        rx.recv()
+            .expect("benchmark map callback dropped")
+            .expect("benchmark readback mapping failed");
+
+        let mapped = slice.get_mapped_range();
+        let bgra = matches!(
+            self.surface_config.format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        );
+        let srgb = self.surface_config.format.is_srgb();
+        let mut pixels = Vec::with_capacity((width * height) as usize);
+        for row in mapped.chunks_exact(bytes_per_row as usize).take(height as usize) {
+            for pixel in row[..unpadded_bytes_per_row as usize].chunks_exact(4) {
+                let (r, g, b) = if bgra {
+                    (pixel[2], pixel[1], pixel[0])
+                } else {
+                    (pixel[0], pixel[1], pixel[2])
+                };
+                let decode = |value: u8| {
+                    let value = value as f32 / 255.0;
+                    if !srgb {
+                        value
+                    } else if value <= 0.04045 {
+                        value / 12.92
+                    } else {
+                        ((value + 0.055) / 1.055).powf(2.4)
+                    }
+                };
+                pixels.push([
+                    decode(r),
+                    decode(g),
+                    decode(b),
+                    pixel[3] as f32 / 255.0,
+                ]);
+            }
+        }
+        drop(mapped);
+        readback.unmap();
+        pixels
     }
 
     fn render_alpha_blend(
@@ -1169,12 +1268,7 @@ impl Renderer {
                         view: &self.revealage_views[fi],
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 1.0,
-                                g: 0.0,
-                                b: 0.0,
-                                a: 0.0,
-                            }),
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                             store: wgpu::StoreOp::Store,
                         },
                         depth_slice: None,
@@ -1218,9 +1312,114 @@ impl Renderer {
 
             pass.set_pipeline(&self.naive_wboit.composite_pipeline);
             pass.set_bind_group(0, &self.wboit_composite_bind_groups[fi], &[]);
-            pass.set_bind_group(1, &self.naive_revealage_bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
+    }
+
+    fn render_depth_sliced(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+    ) {
+        let Some(splats) = &self.splats else {
+            return;
+        };
+
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("depth sliced quantile CDF build"),
+                ..Default::default()
+            });
+            pass.set_pipeline(
+                &self.histogram_wboit.high_quality_spatial_cdf_build_pipeline,
+            );
+            pass.set_bind_group(0, &self.cdf_build_bind_group, &[]);
+            pass.dispatch_workgroups(
+                self.histo_params.tile_count_x,
+                self.histo_params.tile_count_y,
+                1,
+            );
+        }
+
+        // Establish the nearest stable Gaussian core per pixel. The accumulation
+        // pass loads this depth and rejects fragments hidden behind that surface.
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("depth sliced front-core prepass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.front_feature_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_texture_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.splat_pipelines.front_feature_pipeline);
+            pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            pass.set_bind_group(1, &splats.bind_group, &[]);
+            pass.draw(0..4, 0..splats.draw_count);
+        }
+
+        {
+            let color_attachments: [Option<wgpu::RenderPassColorAttachment<'_>>; 4] =
+                std::array::from_fn(|slice| {
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &self.depth_slice_views[slice],
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })
+                });
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("depth sliced optical depth accumulation"),
+                color_attachments: &color_attachments,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_texture_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.splat_pipelines.depth_sliced_pipeline);
+            pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            pass.set_bind_group(1, &splats.bind_group, &[]);
+            pass.set_bind_group(2, &self.histo_accum_bind_groups[self.frame_index], &[]);
+            pass.draw(0..4, 0..splats.draw_count);
+        }
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("depth sliced composite"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(&self.depth_sliced.composite_pipeline);
+        pass.set_bind_group(0, &self.depth_slice_composite_bind_group, &[]);
+        pass.draw(0..3, 0..1);
     }
 
     fn render_histogram_wboit(
@@ -1335,12 +1534,7 @@ impl Renderer {
                         view: &self.revealage_views[fi],
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: 1.0,
-                                g: 0.0,
-                                b: 0.0,
-                                a: 0.0,
-                            }),
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                             store: wgpu::StoreOp::Store,
                         },
                         depth_slice: None,
@@ -1409,9 +1603,12 @@ impl Renderer {
                 ..Default::default()
             });
 
-            pass.set_pipeline(&self.histogram_wboit.composite_pipeline);
+            pass.set_pipeline(if self.mode == RenderMode::DoubleSampleFrontWboit {
+                &self.histogram_wboit.filtered_composite_pipeline
+            } else {
+                &self.histogram_wboit.composite_pipeline
+            });
             pass.set_bind_group(0, &self.histo_composite_tex_bind_groups[fi], &[]);
-            pass.set_bind_group(1, &self.histo_composite_flag_bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
     }
@@ -1506,7 +1703,7 @@ fn create_wboit_textures(
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
+            format: wgpu::TextureFormat::R16Float,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
@@ -1517,6 +1714,47 @@ fn create_wboit_textures(
         accum.create_view(&wgpu::TextureViewDescriptor::default()),
         revealage_views,
     )
+}
+
+fn create_depth_slice_textures(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> [wgpu::TextureView; 4] {
+    std::array::from_fn(|slice| {
+        device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some(&format!("optical depth slice {slice}")),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default())
+    })
+}
+
+fn create_depth_slice_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    views: &[wgpu::TextureView; 4],
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("depth slices composite bind group"),
+        layout,
+        entries: &std::array::from_fn::<_, 4, _>(|binding| wgpu::BindGroupEntry {
+            binding: binding as u32,
+            resource: wgpu::BindingResource::TextureView(&views[binding]),
+        }),
+    })
 }
 
 fn create_cdf_texture(

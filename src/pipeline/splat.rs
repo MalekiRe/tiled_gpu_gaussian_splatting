@@ -8,6 +8,7 @@
 pub struct SplatPipelines {
     pub alpha_pipeline: wgpu::RenderPipeline,
     pub wboit_pipeline: wgpu::RenderPipeline,
+    pub depth_sliced_pipeline: wgpu::RenderPipeline,
     pub histo_pipeline: wgpu::RenderPipeline,
     pub baked_histo_pipeline: wgpu::RenderPipeline,
     pub front_feature_pipeline: wgpu::RenderPipeline,
@@ -146,16 +147,16 @@ impl SplatPipelines {
                 write_mask: wgpu::ColorWrites::ALL,
             }),
             Some(wgpu::ColorTargetState {
-                format: wgpu::TextureFormat::R8Unorm,
+                format: wgpu::TextureFormat::R16Float,
                 blend: Some(wgpu::BlendState {
                     color: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::Zero,
-                        dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::One,
                         operation: wgpu::BlendOperation::Add,
                     },
                     alpha: wgpu::BlendComponent {
-                        src_factor: wgpu::BlendFactor::Zero,
-                        dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::One,
                         operation: wgpu::BlendOperation::Add,
                     },
                 }),
@@ -194,6 +195,57 @@ impl SplatPipelines {
             multiview_mask: None,
             cache: None,
         });
+
+        let depth_sliced_shader = shader(
+            device,
+            "splat depth sliced shader",
+            include_str!("../../shaders/splat_depth_slices.wgsl"),
+        );
+        let additive_slice_targets: [Option<wgpu::ColorTargetState>; 4] = std::array::from_fn(|_| {
+            Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Rgba16Float,
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })
+        });
+        let depth_sliced_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("splat depth sliced layout"),
+            bind_group_layouts: &[camera_bgl, &splat_bgl, histo_accum_bgl],
+            immediate_size: 0,
+        });
+        let depth_sliced_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("splat depth sliced pipeline"),
+                layout: Some(&depth_sliced_layout),
+                vertex: wgpu::VertexState {
+                    module: &depth_sliced_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &depth_sliced_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &additive_slice_targets,
+                    compilation_options: Default::default(),
+                }),
+                primitive,
+                depth_stencil: Some(depth_state()),
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            });
 
         let histo_shader = shader(
             device,
@@ -390,6 +442,7 @@ impl SplatPipelines {
         Self {
             alpha_pipeline,
             wboit_pipeline,
+            depth_sliced_pipeline,
             histo_pipeline,
             baked_histo_pipeline,
             front_feature_pipeline,

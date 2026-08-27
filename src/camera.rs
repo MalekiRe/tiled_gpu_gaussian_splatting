@@ -13,6 +13,8 @@ pub struct Camera {
     pub viewport: (f32, f32),
     pub min_distance: f32,
     pub max_distance: f32,
+    /// Robust scene radius for a tight OIT depth window; absent for the built-in demo.
+    depth_radius: Option<f32>,
     /// Where `reset()` returns to.
     home: (f32, f32, f32, glam::Vec3),
     // drag state
@@ -34,6 +36,7 @@ impl Camera {
             viewport: (1280.0, 720.0),
             min_distance: 1.0,
             max_distance: 50.0,
+            depth_radius: None,
             home: (0.5, 0.3, 8.0, glam::Vec3::ZERO),
             dragging: false,
             last_mouse: None,
@@ -50,6 +53,7 @@ impl Camera {
         self.far = radius * 50.0;
         self.min_distance = radius * 0.05;
         self.max_distance = radius * 20.0;
+        self.depth_radius = Some(radius);
         self.pitch = 0.15;
         self.yaw = 0.0;
         self.home = (self.yaw, self.pitch, self.distance, self.target);
@@ -81,6 +85,7 @@ impl Camera {
         let (w, h) = self.viewport;
         // Pixels per unit at unit depth. Both axes share it: width / aspect == height.
         let fy = h / (2.0 * (self.fov_y * 0.5).tan());
+        let (depth_min, depth_range) = self.depth_window();
         CameraUniform {
             view_proj: vp.to_cols_array_2d(),
             view: view.to_cols_array_2d(),
@@ -88,9 +93,20 @@ impl Camera {
             far: self.far,
             focal: [fy, fy],
             viewport: [w, h],
-            _padding0: [0.0; 2],
+            depth_min,
+            depth_range,
             cam_pos: self.eye().to_array(),
             _padding1: 0.0,
+        }
+    }
+
+    /// Eye-space interval occupied by the scene. Projection still uses near/far; only
+    /// transparency weights and histograms use this tighter, zoom-following range.
+    pub fn depth_window(&self) -> (f32, f32) {
+        if let Some(radius) = self.depth_radius {
+            (self.distance - radius, (2.0 * radius).max(1e-6))
+        } else {
+            (self.near, (self.far - self.near).max(1e-6))
         }
     }
 
