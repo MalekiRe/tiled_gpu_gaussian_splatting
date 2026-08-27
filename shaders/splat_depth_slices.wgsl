@@ -306,7 +306,13 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     // transitions without adding another pass or attachment.
     // Front-loaded representatives: an error near the eye modulates every layer
     // behind it, so spend more of the fixed four-layer budget there.
-    let slice_position = clamp(optical_quantile * 3.0, 0.0, 3.0);
+    let core_warp = 0.25 * smoothstep(0.04, 0.18, alpha);
+    let warped_quantile = mix(
+        optical_quantile,
+        pow(optical_quantile, 0.80),
+        core_warp,
+    );
+    let slice_position = clamp(warped_quantile * 3.0, 0.0, 3.0);
     // Keep the visually solid Gaussian core in one ordered representative. Only
     // the translucent fringe uses the tent basis. This avoids manufacturing two
     // semi-transparent copies of a surface-defining sample.
