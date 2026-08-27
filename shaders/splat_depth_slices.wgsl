@@ -140,7 +140,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             let observation_normal_agreement = clamp(
                 0.5 + 0.5 * dot(primary_normal, fallback_normal),
                 0.0,
-                1.0,
+                0.86,
             );
             let observation_luminance_agreement = exp(
                 -2.0 * abs(primary_payload.x - fallback_luminance),
@@ -161,7 +161,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             );
             let luminance_scale = clamp(
                 front_luminance / max(fallback_luminance, 1.0 / 63.0),
-                0.9,
+                1.0,
                 2.0,
             );
             front_color = clamp(fallback_color * luminance_scale, vec3f(0.0), vec3f(1.0));
