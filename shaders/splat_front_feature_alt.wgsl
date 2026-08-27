@@ -21,15 +21,19 @@ fn hash_u32(value: u32) -> u32 {
 
 fn stochastic_sample(pixel: vec2<u32>, splat_index: u32) -> f32 {
     let phase = hash_u32(splat_index);
-    let x = (pixel.x + phase) & 3u;
-    let y = (pixel.y + (phase >> 2u)) & 3u;
-    let bayer = array<u32, 16>(
-         0u,  8u,  2u, 10u,
-        12u,  4u, 14u,  6u,
-         3u, 11u,  1u,  9u,
-        15u,  7u, 13u,  5u,
+    let x = (pixel.x + phase) & 7u;
+    let y = (pixel.y + (phase >> 3u)) & 7u;
+    let bayer = array<u32, 64>(
+         0u, 32u,  8u, 40u,  2u, 34u, 10u, 42u,
+        48u, 16u, 56u, 24u, 50u, 18u, 58u, 26u,
+        12u, 44u,  4u, 36u, 14u, 46u,  6u, 38u,
+        60u, 28u, 52u, 20u, 62u, 30u, 54u, 22u,
+         3u, 35u, 11u, 43u,  1u, 33u,  9u, 41u,
+        51u, 19u, 59u, 27u, 49u, 17u, 57u, 25u,
+        15u, 47u,  7u, 39u, 13u, 45u,  5u, 37u,
+        63u, 31u, 55u, 23u, 61u, 29u, 53u, 21u,
     );
-    let sample = (f32(bayer[y * 4u + x]) + 0.5) / 16.0;
+    let sample = (f32(bayer[y * 8u + x]) + 0.5) / 64.0;
     return 1.0 - sample;
 }
 
