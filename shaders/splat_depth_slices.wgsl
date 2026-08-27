@@ -158,7 +158,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
                 filtered_fallback_color - filtered_fallback_min - filtered_fallback_max
             ) / (filtered_fallback_weight - 2.0);
             filtered_fallback_color = clamp(
-                mix(raw_fallback_mean, trimmed_fallback_mean, 1.25),
+                mix(raw_fallback_mean, trimmed_fallback_mean, 1.50),
                 vec3f(0.0),
                 vec3f(1.0),
             );
