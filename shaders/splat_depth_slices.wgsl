@@ -137,16 +137,19 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             let depth_agreement = exp(-pow(observation_depth_delta / (0.12 * radius_z), 2.0));
             let primary_normal = decode_octahedral(primary_feature.xy);
             let fallback_normal = decode_octahedral(fallback_feature.xy);
-            let observation_normal_agreement = clamp(
+            let raw_observation_normal_agreement = clamp(
                 0.5 + 0.5 * dot(primary_normal, fallback_normal),
                 0.0,
-                0.64,
+                1.0,
             );
+            // Covariance-derived normal signs are only a heuristic, so even
+            // perfectly matching stochastic observations must not dominate.
+            let observation_normal_agreement = min(raw_observation_normal_agreement, 0.64);
             let observation_luminance_agreement = exp(
                 -2.0 * abs(primary_payload.x - fallback_luminance),
             );
             coherent_layer_evidence = (1.0 - depth_agreement)
-                * observation_normal_agreement
+                * raw_observation_normal_agreement
                 * observation_luminance_agreement;
             let observation_agreement = depth_agreement
                 * observation_normal_agreement
