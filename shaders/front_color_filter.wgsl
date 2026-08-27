@@ -30,11 +30,6 @@ fn main(
     }
 
     let center_index = (local_id.y + 1u) * TILE_WIDTH + local_id.x + 1u;
-    let center = feature_tile[center_index];
-    if (center.w < 1.0) {
-        textureStore(filtered_color_out, pixel, vec4f(0.0));
-        return;
-    }
 
     var color_sum = vec3f(0.0);
     var color_min = vec3f(1.0);
@@ -52,6 +47,11 @@ fn main(
                 sample_count += 1.0;
             }
         }
+    }
+
+    if (sample_count < 1.0) {
+        textureStore(filtered_color_out, pixel, vec4f(0.0));
+        return;
     }
 
     let raw_mean = color_sum / sample_count;
