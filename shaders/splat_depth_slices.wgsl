@@ -256,7 +256,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             front_color = mix(
                 front_color,
                 baked_front_color,
-                0.05 * (1.0 - observation_agreement),
+                0.025 * (1.0 - observation_agreement),
             );
             front_normal = normalize(mix(primary_normal, fallback_normal, consensus_blend));
         }
