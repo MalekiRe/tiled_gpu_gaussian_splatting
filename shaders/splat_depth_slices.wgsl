@@ -92,12 +92,27 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         vec3f(u, v, clamp(cdf_z + cdf_extent, 0.0, 1.0)),
         0.0,
     );
-    let sharpened_sample = clamp(
-        3.7 * cdf_center - 1.35 * (cdf_front + cdf_back),
-        vec4<f32>(0.0),
-        vec4<f32>(1.0),
+    let cdf_far_front = textureSampleLevel(
+        cdf_texture,
+        cdf_sampler,
+        vec3f(u, v, clamp(cdf_z - 2.0 * cdf_extent, 0.0, 1.0)),
+        0.0,
     );
-    let cdf_sample = vec4<f32>(cdf_center.r, sharpened_sample.g, cdf_center.ba);
+    let cdf_far_back = textureSampleLevel(
+        cdf_texture,
+        cdf_sampler,
+        vec3f(u, v, clamp(cdf_z + 2.0 * cdf_extent, 0.0, 1.0)),
+        0.0,
+    );
+    let pdf_curvature = (
+        -cdf_far_front.g + 16.0 * cdf_front.g - 30.0 * cdf_center.g
+            + 16.0 * cdf_back.g - cdf_far_back.g
+    ) / 12.0;
+    let cdf_sample = vec4<f32>(
+        cdf_center.r,
+        clamp(cdf_center.g - 1.35 * pdf_curvature, 0.0, 1.0),
+        cdf_center.ba,
+    );
     var optical_quantile = cdf_sample.r;
     let pixel = vec2<i32>(in.clip_position.xy);
     let primary_feature = textureLoad(front_feature, pixel, 0);
