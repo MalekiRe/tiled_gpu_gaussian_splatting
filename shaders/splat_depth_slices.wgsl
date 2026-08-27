@@ -126,6 +126,8 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         vec3<f32>(0.2126, 0.7152, 0.0722),
     );
     var filtered_fallback_color = fallback_color;
+    var filtered_fallback_min = fallback_color;
+    var filtered_fallback_max = fallback_color;
     var filtered_fallback_weight = 1.0;
     if (fallback_valid) {
         let fallback_size = vec2<i32>(textureDimensions(front_feature_fallback));
@@ -143,11 +145,20 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             );
             let neighbor = textureLoad(front_feature_fallback, neighbor_pixel, 0);
             if (neighbor.w >= 1.0) {
-                filtered_fallback_color += decode_rgb3(neighbor.w);
+                let neighbor_color = decode_rgb3(neighbor.w);
+                filtered_fallback_color += neighbor_color;
+                filtered_fallback_min = min(filtered_fallback_min, neighbor_color);
+                filtered_fallback_max = max(filtered_fallback_max, neighbor_color);
                 filtered_fallback_weight += 1.0;
             }
         }
-        filtered_fallback_color /= filtered_fallback_weight;
+        if (filtered_fallback_weight > 2.0) {
+            filtered_fallback_color = (
+                filtered_fallback_color - filtered_fallback_min - filtered_fallback_max
+            ) / (filtered_fallback_weight - 2.0);
+        } else {
+            filtered_fallback_color /= filtered_fallback_weight;
+        }
     }
     let fallback_luminance = dot(
         filtered_fallback_color,
