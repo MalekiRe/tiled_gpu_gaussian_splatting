@@ -110,7 +110,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
     ) / 12.0;
     let cdf_sample = vec4<f32>(
         cdf_center.r,
-        clamp(cdf_center.g - 1.35 * pdf_curvature, 0.0, 1.0),
+        clamp(cdf_center.g - pdf_curvature, 0.0, 1.0),
         cdf_center.ba,
     );
     var optical_quantile = cdf_sample.r;
