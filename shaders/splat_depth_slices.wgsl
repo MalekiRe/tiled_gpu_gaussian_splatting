@@ -278,7 +278,7 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
             -4.0 * dot(in.color - front_color, in.color - front_color),
         );
         let color_gate_strength = select(
-            0.30,
+            0.50,
             0.5 * observation_confidence,
             fallback_valid,
         );
