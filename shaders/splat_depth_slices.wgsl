@@ -76,9 +76,9 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         vec3f(u, v, clamp(cdf_z, 0.0, 1.0)),
         0.0,
     );
-    // Use the Gaussian's eye-depth extent to estimate local CDF curvature. A
-    // mild unsharp correction counters depth-bin interpolation blur without
-    // adding storage or incoherent memory access.
+    // Use the Gaussian's eye-depth extent to estimate local PDF curvature. A
+    // mild unsharp correction sharpens peak confidence without perturbing the
+    // monotone CDF quantile itself.
     let cdf_extent = 1.7320508 * in.depth_sigma;
     let cdf_front = textureSampleLevel(
         cdf_texture,
@@ -92,19 +92,12 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         vec3f(u, v, clamp(cdf_z + cdf_extent, 0.0, 1.0)),
         0.0,
     );
-    let sharpened_cdf = clamp(
+    let sharpened_sample = clamp(
         1.8 * cdf_center - 0.4 * (cdf_front + cdf_back),
         vec4<f32>(0.0),
         vec4<f32>(1.0),
     );
-    let cdf_sample = vec4<f32>(
-        clamp(
-            sharpened_cdf.r,
-            min(cdf_front.r, cdf_back.r),
-            max(cdf_front.r, cdf_back.r),
-        ),
-        sharpened_cdf.gba,
-    );
+    let cdf_sample = vec4<f32>(cdf_center.r, sharpened_sample.g, cdf_center.ba);
     var optical_quantile = cdf_sample.r;
     let pixel = vec2<i32>(in.clip_position.xy);
     let primary_feature = textureLoad(front_feature, pixel, 0);
