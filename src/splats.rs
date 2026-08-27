@@ -698,7 +698,7 @@ impl HighQualitySpatialDirectionalPrior {
                         if power >= -4.5 {
                             let gaussian = power.exp();
                             let nonlinear = -(1.0 - opacity * gaussian).ln();
-                            kernel_sum += (1.25 * nonlinear - 0.25 * optical_depth * gaussian)
+                            kernel_sum += (1.5 * nonlinear - 0.5 * optical_depth * gaussian)
                                 .max(0.0);
                         }
                     }
@@ -723,7 +723,7 @@ impl HighQualitySpatialDirectionalPrior {
                             let gaussian = power.exp();
                             let nonlinear = -(1.0 - opacity * gaussian).ln();
                             let sample_optical_depth =
-                                (1.25 * nonlinear - 0.25 * optical_depth * gaussian).max(0.0);
+                                (1.5 * nonlinear - 0.5 * optical_depth * gaussian).max(0.0);
                             let cell_weight = total_weight * sample_optical_depth / kernel_sum;
                             histograms[Self::index(view, x, y, depth_bin)] += cell_weight;
                             // A soft front bias produces a stable color hint without
