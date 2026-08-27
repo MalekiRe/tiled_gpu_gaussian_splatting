@@ -115,14 +115,35 @@ fn fs_main(in: SplatVsOut) -> SliceOutput {
         clamp(cdf_center.g - pdf_curvature, 0.0, 1.0),
         cdf_center.ba,
     );
-    let mean_tile_tau = textureSampleLevel(
+    let tile_optical_data = textureSampleLevel(
         tile_optical_depth,
         cdf_sampler,
         vec2f(u, v),
         0.0,
-    ).r;
+    );
+    let mean_tile_tau = tile_optical_data.r;
     let optical_density_signal = 1.0 - exp(-0.25 * mean_tile_tau);
-    var optical_quantile = cdf_sample.r;
+    let quantile_depths = tile_optical_data.gba;
+    var knot_quantile = 0.0;
+    if (normalized_z < quantile_depths.x) {
+        knot_quantile = 0.25 * normalized_z / max(quantile_depths.x, 1e-5);
+    } else if (normalized_z < quantile_depths.y) {
+        knot_quantile = 0.25 + 0.25 * (normalized_z - quantile_depths.x)
+            / max(quantile_depths.y - quantile_depths.x, 1e-5);
+    } else if (normalized_z < quantile_depths.z) {
+        knot_quantile = 0.50 + 0.25 * (normalized_z - quantile_depths.y)
+            / max(quantile_depths.z - quantile_depths.y, 1e-5);
+    } else {
+        knot_quantile = 0.75 + 0.25 * (normalized_z - quantile_depths.z)
+            / max(1.0 - quantile_depths.z, 1e-5);
+    }
+    let knot_confidence = (1.0 - smoothstep(0.02, 0.16, cdf_sample.g))
+        * (1.0 - 0.5 * optical_density_signal);
+    var optical_quantile = mix(
+        cdf_sample.r,
+        clamp(knot_quantile, 0.0, 1.0),
+        0.20 * knot_confidence,
+    );
     let pixel = vec2<i32>(in.clip_position.xy);
     let primary_feature = textureLoad(front_feature, pixel, 0);
     let fallback_feature = textureLoad(front_feature_fallback, pixel, 0);

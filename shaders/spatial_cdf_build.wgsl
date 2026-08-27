@@ -103,10 +103,31 @@ fn main(
         cdf = (buf_a[bin] - bin_value) / total;
     }
     if (bin == 0u) {
+        var quantile_depths = vec3f(1.0);
+        var quantile_found = vec3(false);
+        for (var i = 0u; i < DEPTH_BINS; i++) {
+            var previous = 0.0;
+            if (i > 0u && total > 0.0) {
+                previous = buf_a[i - 1u] / total;
+            }
+            let current = select(0.0, buf_a[i] / total, total > 0.0);
+            for (var q = 0u; q < 3u; q++) {
+                let quantile_target = 0.25 * f32(q + 1u);
+                if (!quantile_found[q] && current >= quantile_target) {
+                    let fraction = clamp(
+                        (quantile_target - previous) / max(current - previous, 1e-6),
+                        0.0,
+                        1.0,
+                    );
+                    quantile_depths[q] = (f32(i) + fraction) / f32(DEPTH_BINS);
+                    quantile_found[q] = true;
+                }
+            }
+        }
         textureStore(
             optical_total_out,
             vec2i(i32(tile_x), i32(tile_y)),
-            vec4f(optical_total, 0.0, 0.0, 0.0),
+            vec4f(optical_total, quantile_depths),
         );
     }
     textureStore(
